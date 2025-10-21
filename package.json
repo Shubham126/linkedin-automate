@@ -1,13 +1,14 @@
 {
   "name": "linkedin-ai-automation",
   "version": "1.0.0",
-  "description": "LinkedIn automation with AI-powered commenting",
+  "description": "LinkedIn automation with AI-powered commenting and reply management",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js",
     "test-ai": "node test-ai.js",
-    "stats": "node view-stats.js"
+    "stats": "node view-stats.js",
+    "check-replies": "node checkReplies.js"
   },
   "keywords": ["linkedin", "automation", "ai", "puppeteer"],
   "author": "",
