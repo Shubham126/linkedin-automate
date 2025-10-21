@@ -1,0 +1,21 @@
+{
+  "name": "linkedin-ai-automation",
+  "version": "1.0.0",
+  "description": "LinkedIn automation with AI-powered commenting",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "test-ai": "node test-ai.js",
+    "stats": "node view-stats.js"
+  },
+  "keywords": ["linkedin", "automation", "ai", "puppeteer"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer": "^23.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "dotenv": "^16.4.5"
+  }
+}
