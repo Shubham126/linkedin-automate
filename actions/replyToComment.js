@@ -1,13 +1,9 @@
-import { sleep, randomDelay } from '../utils/helpers.js';
+import { sleep, randomDelay, humanLikeType } from '../utils/helpers.js';
 
-/**
- * Like a reply
- */
 export async function likeReply(replyElement) {
   try {
     console.log('👍 Attempting to like the reply...');
     
-    // Look for the Like button in the reply
     const likeButton = await replyElement.$('button[aria-label*="React Like"], button[aria-label*="Like"]');
     
     if (!likeButton) {
@@ -24,7 +20,7 @@ export async function likeReply(replyElement) {
 
     await likeButton.click();
     console.log('✅ Reply liked!');
-    await sleep(randomDelay(1500, 2500));
+    await sleep(randomDelay(2000, 3500)); // Longer pause after liking
     return true;
     
   } catch (error) {
@@ -33,14 +29,10 @@ export async function likeReply(replyElement) {
   }
 }
 
-/**
- * Reply to a comment/reply
- */
 export async function replyToComment(replyElement, page, replyText) {
   try {
     console.log('💬 Attempting to reply...');
     
-    // Find and click the Reply button
     const replyButton = await replyElement.$('button[aria-label*="Reply"]');
     
     if (!replyButton) {
@@ -50,13 +42,10 @@ export async function replyToComment(replyElement, page, replyText) {
     
     await replyButton.click();
     console.log('✅ Reply box opened');
-    await sleep(randomDelay(2500, 3500));
+    await sleep(randomDelay(3000, 4500)); // Longer wait for reply box
 
-    // Wait for the reply input box to appear
     await sleep(2000);
     
-    // The reply box should appear right after the comment
-    // Look for the contenteditable div near the reply element
     const replyInput = await page.$('div.ql-editor[contenteditable="true"]');
     
     if (!replyInput) {
@@ -64,15 +53,24 @@ export async function replyToComment(replyElement, page, replyText) {
       return false;
     }
 
-    await replyInput.click();
-    await sleep(randomDelay(1000, 1500));
+    // Pause before typing (thinking time)
+    console.log('💭 Thinking before replying...');
+    await sleep(randomDelay(1500, 2500));
 
-    console.log(`⌨️ Typing reply: "${replyText}"`);
-    await replyInput.type(replyText, { delay: randomDelay(80, 150) });
-    await sleep(randomDelay(2500, 3500));
+    console.log(`⌨️ Typing reply slowly: "${replyText}"`);
+    
+    // Human-like typing with slower speed
+    await humanLikeType(replyInput, replyText, {
+      minDelay: 90,       // Slower typing
+      maxDelay: 220,      // Even slower max
+      pauseEvery: 12,     // Pause frequently
+      pauseDelay: 500,    // Longer pauses
+      mistakeChance: 0.04 // 4% chance of typo
+    });
 
-    // Find the Reply submit button
-    // It should have class comments-comment-box__submit-button--cr and text "Reply"
+    console.log('📖 Re-reading reply...');
+    await sleep(randomDelay(2500, 4000)); // Read what we wrote
+
     const submitButtons = await page.$$('button.comments-comment-box__submit-button--cr');
     
     let submitButton = null;
@@ -89,7 +87,6 @@ export async function replyToComment(replyElement, page, replyText) {
       return false;
     }
 
-    // Check if enabled
     const isEnabled = await submitButton.evaluate(el => !el.disabled);
     
     if (!isEnabled) {
@@ -97,15 +94,17 @@ export async function replyToComment(replyElement, page, replyText) {
       return false;
     }
 
+    console.log('👀 About to post reply...');
+    await sleep(randomDelay(1000, 1800)); // Final pause
+
     console.log('🖱️ Clicking Reply button...');
     await submitButton.click();
     console.log('✅ Reply posted!');
-    await sleep(randomDelay(3000, 4000));
+    await sleep(randomDelay(3500, 5000));
     return true;
     
   } catch (error) {
     console.error('❌ Error replying to comment:', error.message);
-    console.error('Stack:', error.stack);
     return false;
   }
 }

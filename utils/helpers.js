@@ -22,23 +22,12 @@ export function extractHashtags(text) {
   return hashtags.slice(0, 5);
 }
 
-/**
- * Generate random decision based on probability
- * @param {number} probability - Probability percentage (0-100)
- * @returns {boolean} True if should perform action
- */
 export function shouldPerformAction(probability) {
   return Math.random() * 100 < probability;
 }
 
-/**
- * Extract post URL or ID from post element
- * @param {Object} post - Puppeteer element handle
- * @returns {Promise<string>} Post URL or ID
- */
 export async function extractPostUrl(post) {
   try {
-    // Try to find the post link
     const linkElement = await post.$('a[href*="/posts/"], a[href*="/activity/"]');
     
     if (linkElement) {
@@ -46,11 +35,9 @@ export async function extractPostUrl(post) {
       return url;
     }
     
-    // Fallback: try to get data-urn attribute
     const urn = await post.evaluate(el => el.getAttribute('data-urn'));
     if (urn) return urn;
     
-    // Last resort: generate unique ID from timestamp
     return `post_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
   } catch (error) {
@@ -59,9 +46,6 @@ export async function extractPostUrl(post) {
   }
 }
 
-/**
- * Extract author name from post
- */
 export async function extractAuthorName(post) {
   try {
     const authorElement = await post.$('.update-components-actor__title');
@@ -73,4 +57,53 @@ export async function extractAuthorName(post) {
   } catch (error) {
     return 'Unknown';
   }
+}
+
+/**
+ * Type text with human-like speed, pauses, and mistakes
+ * @param {Object} element - Puppeteer element handle
+ * @param {string} text - Text to type
+ * @param {Object} options - Typing options
+ */
+export async function humanLikeType(element, text, options = {}) {
+  const {
+    minDelay = 80,
+    maxDelay = 200,
+    pauseEvery = 12,
+    pauseDelay = 300,
+    mistakeChance = 0.05 // 5% chance of typo
+  } = options;
+  
+  await element.click();
+  await sleep(randomDelay(400, 800));
+  
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    
+    // Simulate occasional typo and correction
+    if (Math.random() < mistakeChance && i > 0) {
+      // Type wrong character
+      const wrongChar = String.fromCharCode(char.charCodeAt(0) + 1);
+      await element.type(wrongChar, { delay: randomDelay(minDelay, maxDelay) });
+      await sleep(randomDelay(200, 400)); // Realize mistake
+      await element.press('Backspace'); // Delete mistake
+      await sleep(randomDelay(100, 300)); // Brief pause
+    }
+    
+    // Type the correct character
+    if (char === ' ') {
+      // Longer pause for spaces
+      await element.type(char, { delay: randomDelay(150, 350) });
+    } else {
+      // Normal typing with variation
+      await element.type(char, { delay: randomDelay(minDelay, maxDelay) });
+    }
+    
+    // Random pause during typing (like thinking)
+    if (i > 0 && i % randomDelay(pauseEvery - 3, pauseEvery + 3) === 0) {
+      await sleep(randomDelay(pauseDelay, pauseDelay + 400));
+    }
+  }
+  
+  await sleep(randomDelay(300, 600));
 }

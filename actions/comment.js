@@ -1,12 +1,5 @@
-import { sleep, randomDelay } from '../utils/helpers.js';
+import { sleep, randomDelay, humanLikeType } from '../utils/helpers.js';
 
-/**
- * Comment on a post
- * @param {Object} post - Puppeteer element handle
- * @param {Object} page - Puppeteer page
- * @param {string} commentText - Comment to post
- * @returns {Promise<boolean>} True if commented successfully
- */
 export async function commentOnPost(post, page, commentText) {
   try {
     console.log('💬 Attempting to comment on post...');
@@ -19,8 +12,10 @@ export async function commentOnPost(post, page, commentText) {
     
     await commentButton.click();
     console.log('✅ Comment box opened');
-    await sleep(randomDelay(3500, 4500));
+    await sleep(randomDelay(2500, 4000)); // Longer pause before typing
 
+    console.log('⌨️ Finding comment editor...');
+    
     await page.locator('div.ql-editor[contenteditable="true"]').wait({ timeout: 10000 });
     
     const commentBox = await post.$('div.ql-editor[contenteditable="true"]');
@@ -29,12 +24,23 @@ export async function commentOnPost(post, page, commentText) {
       return false;
     }
 
-    await commentBox.click();
-    await sleep(randomDelay(1000, 1500));
+    // Pause before typing (like reading)
+    console.log('📖 Pausing to "read" before typing...');
+    await sleep(randomDelay(1500, 2500));
 
-    console.log(`⌨️ Typing comment: "${commentText}"`);
-    await commentBox.type(commentText, { delay: randomDelay(100, 200) });
-    await sleep(randomDelay(2500, 3500));
+    console.log(`⌨️ Typing comment slowly: "${commentText}"`);
+    
+    // Use human-like typing with occasional pauses and mistakes
+    await humanLikeType(commentBox, commentText, {
+      minDelay: 100,      // Slower minimum typing
+      maxDelay: 250,      // Slower maximum typing
+      pauseEvery: 10,     // Pause every ~10 characters
+      pauseDelay: 400,    // Longer thinking pauses
+      mistakeChance: 0.03 // 3% chance of typo
+    });
+    
+    console.log('💭 Re-reading comment before posting...');
+    await sleep(randomDelay(2000, 3500)); // Read what we wrote
 
     console.log('🔍 Searching for submit button...');
     
@@ -91,6 +97,10 @@ export async function commentOnPost(post, page, commentText) {
       console.log('⚠️ Submit button is disabled, skipping...');
       return false;
     }
+
+    // Final pause before clicking (like double-checking)
+    console.log('👀 About to post comment...');
+    await sleep(randomDelay(800, 1500));
 
     console.log('🖱️ Clicking submit button...');
     await submitButton.click();
