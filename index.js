@@ -28,7 +28,9 @@ async function linkedInAutomation() {
       "--start-maximized", 
       "--no-sandbox", 
       "--disable-setuid-sandbox",
-      "--disable-blink-features=AutomationControlled"
+      "--disable-blink-features=AutomationControlled",
+      "--lang=en-US",  // Force English language
+      "--accept-lang=en-US,en;q=0.9"  // Accept English
     ],
   });
 
@@ -36,12 +38,28 @@ async function linkedInAutomation() {
     const page = (await browser.pages())[0];
     page.setDefaultNavigationTimeout(60000);
 
+    // Set English user agent and language headers
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9'
+    });
+
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
+    // Override navigator.language and languages
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'language', {
+        get: function() { return 'en-US'; }
+      });
+      Object.defineProperty(navigator, 'languages', {
+        get: function() { return ['en-US', 'en']; }
+      });
+    });
+
     console.log('\n🚀 LinkedIn AI-Powered Automation Bot Started\n');
     console.log('=' .repeat(60));
+    console.log('🌐 Language: English (en-US)');
     console.log('🤖 AI will read each post and decide engagement');
     console.log('👍 Will LIKE posts scoring 6+ out of 10');
     console.log('💬 Will COMMENT on posts scoring 9+ out of 10');
@@ -57,7 +75,8 @@ async function linkedInAutomation() {
 
     console.log('\n🏠 Navigating to LinkedIn feed...');
     try {
-      await page.goto('https://www.linkedin.com/feed/', { 
+      // Navigate to English version explicitly
+      await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
         waitUntil: 'networkidle2', 
         timeout: 60000 
       });
@@ -152,7 +171,7 @@ async function linkedInAutomation() {
 
       // AI evaluates the post
       console.log('\n🤖 AI is analyzing this post...');
-      await sleep(1000); // Simulate reading time
+      await sleep(1000);
       
       const evaluation = await evaluatePost(postContent);
       
@@ -172,12 +191,12 @@ async function linkedInAutomation() {
       scoreDistribution.likes.push(evaluation.likeScore);
       scoreDistribution.comments.push(evaluation.commentScore);
 
-      // Simulate human reading time based on post length
-      const readingTime = Math.min(5000, postContent.wordCount * 50); // 50ms per word
+      // Simulate human reading time
+      const readingTime = Math.min(5000, postContent.wordCount * 50);
       console.log(`\n📚 Simulating reading time: ${Math.round(readingTime/1000)}s...`);
       await sleep(readingTime);
 
-      // LIKE ACTION (if score >= 6)
+      // LIKE ACTION
       if (evaluation.shouldLike) {
         console.log('\n👍 Decision: This post deserves a LIKE');
         const liked = await likePost(post);
@@ -200,14 +219,13 @@ async function linkedInAutomation() {
         console.log(`\n⏭️ Skipping like (score ${evaluation.likeScore}/10 < 6)`);
       }
 
-      // COMMENT ACTION (if score >= 9 OR job post)
+      // COMMENT ACTION
       if (evaluation.shouldComment) {
         console.log(`\n💬 Decision: This post deserves a COMMENT`);
         if (evaluation.isJobPost) {
           console.log('   💼 Detected as JOB POST - will express interest!');
         }
         
-        // Generate contextual comment
         console.log('🤖 Generating contextual comment...');
         const commentText = await generateComment(postContent, evaluation);
         
@@ -234,7 +252,6 @@ async function linkedInAutomation() {
         console.log(`\n⏭️ Skipping comment (score ${evaluation.commentScore}/10 < 9)`);
       }
 
-      // If no action taken
       if (!evaluation.shouldLike && !evaluation.shouldComment) {
         console.log('\n👀 Just viewing this post (not engaging)');
       }

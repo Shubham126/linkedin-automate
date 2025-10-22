@@ -8,7 +8,8 @@
     "start": "node index.js",
     "test-ai": "node test-ai.js",
     "stats": "node view-stats.js",
-    "check-replies": "node checkReplies.js"
+    "check-replies": "node checkReplies.js",
+    "create-post": "node createPost.js"
   },
   "keywords": ["linkedin", "automation", "ai", "puppeteer"],
   "author": "",
