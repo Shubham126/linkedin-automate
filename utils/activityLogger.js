@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { logActivityToSheets } from '../services/googleSheetsService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,7 +33,7 @@ async function readLog() {
 }
 
 /**
- * Log an activity (like or comment)
+ * Log an activity (like or comment) to both JSON and Google Sheets
  * @param {Object} activity - Activity data
  */
 export async function logActivity(activity) {
@@ -42,14 +43,22 @@ export async function logActivity(activity) {
     
     const activityEntry = {
       timestamp: new Date().toISOString(),
-      date: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+      // date: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
       ...activity
     };
     
+    // Log to JSON file (local backup)
     log.activities.push(activityEntry);
-    
     await fs.writeFile(LOG_FILE, JSON.stringify(log, null, 2));
-    console.log(`📝 Logged: ${activity.action} on post`);
+    console.log(`📝 Logged: ${activity.action} on post (JSON)`);
+    
+    // Log to Google Sheets (cloud storage)
+    try {
+      await logActivityToSheets(activityEntry);
+    } catch (sheetsError) {
+      console.log('⚠️ Google Sheets logging failed (continuing with JSON only)');
+      console.log('   Error:', sheetsError.message);
+    }
     
   } catch (error) {
     console.error('❌ Error logging activity:', error.message);

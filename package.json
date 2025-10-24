@@ -6,18 +6,25 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "test-ai": "node test-ai.js",
-    "stats": "node view-stats.js",
     "check-replies": "node checkReplies.js",
-    "create-post": "node createPost.js"
+    "create-post": "node createPost.js",
+    "search": "node searchAndEngage.js",
+    "test-sheets": "node sheet-test.js",
+    "stats": "node view-stats.js"
   },
-  "keywords": ["linkedin", "automation", "ai", "puppeteer"],
+  "keywords": [
+    "linkedin",
+    "automation",
+    "ai",
+    "puppeteer"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "dotenv": "^16.4.5",
+    "googleapis": "^164.1.0",
     "puppeteer": "^23.0.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "dotenv": "^16.4.5"
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
