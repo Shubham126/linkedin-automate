@@ -10,6 +10,9 @@
     "create-post": "node createPost.js",
     "search": "node searchAndEngage.js",
     "scrape-people": "node scrapeLinkedInPeople.js",
+    "send-requests": "node sendConnectionRequests.js",
+    "monitor-connections": "node monitorConnections.js",
+    "send-welcome": "node sendWelcomeMessages.js",
     "stats": "node view-stats.js"
   },
   "keywords": [
