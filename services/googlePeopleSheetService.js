@@ -37,13 +37,14 @@ async function initializePeopleSheet() {
         'Connection Degree',
         'Headline',
         'Location',
+        'Followers',
         'About',
         'Scraped Date'
       ];
 
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: 'Sheet1!A1:G1',
+        range: 'Sheet1!A1:H1',
         valueInputOption: 'RAW',
         resource: { values: [headers] },
       });
@@ -124,13 +125,14 @@ export async function saveProfileToSheet(profileData) {
       profileData.connectionDegree || '',
       profileData.headline || '',
       profileData.location || '',
+      profileData.followers || '',
       profileData.about || '',
       new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
     ];
 
     await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: 'Sheet1!A:G',
+      range: 'Sheet1!A:H',
       valueInputOption: 'RAW',
       resource: { values: [row] },
     });
