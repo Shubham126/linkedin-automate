@@ -23,6 +23,7 @@
 !.env.example
 
 google-credentials.json
+activity-log.json
 
 # ===================================================================
 # Logs & Temporary Files

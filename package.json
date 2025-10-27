@@ -9,7 +9,7 @@
     "check-replies": "node checkReplies.js",
     "create-post": "node createPost.js",
     "search": "node searchAndEngage.js",
-    "test-sheets": "node sheet-test.js",
+    "scrape-people": "node scrapeLinkedInPeople.js",
     "stats": "node view-stats.js"
   },
   "keywords": [
