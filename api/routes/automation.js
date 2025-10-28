@@ -21,7 +21,7 @@ router.post('/search-engagement/start', startSearchEngagement);
 router.post('/profile-scraping/start', startProfileScraping);
 
 // Job management
-router.get('/job/:jobId/status', getJobStatus);
-router.post('/job/:jobId/stop', stopJob);
+router.get('/job/status', getJobStatus);     // Get current job status (no jobId needed)
+router.post('/job/cancel', stopJob);         // Cancel current job (no jobId needed)
 
 export default router;
