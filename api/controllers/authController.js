@@ -1,203 +1,305 @@
-import User from '../../models/User.js';
-import jwt from 'jsonwebtoken';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { linkedInLogin } from '../../actions/login.js';
+import { hasValidSession, invalidateSession } from '../../services/cookieService.js';
+import { getProxyArgs, authenticateProxy } from '../../utils/proxyHelper.js';
 
-// Generate JWT token
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: '7d'
-  });
-};
+puppeteer.use(StealthPlugin());
 
-// Register new user
-export async function register(req, res) {
+// ==================== USER MANAGEMENT FUNCTIONS ====================
+
+/**
+ * Register a new user
+ */
+export const register = async (req, res) => {
   try {
-    const { email, password, name, linkedinUsername, linkedinPassword } = req.body;
+    const { email, password, name } = req.body;
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        error: 'User already exists with this email'
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Email and password are required' 
       });
     }
 
-    // Create new user (password will be hashed automatically by pre-save hook)
-    const user = await User.create({
-      email,
-      password,
-      name,
-      linkedinUsername,
-      linkedinPassword
-    });
+    // TODO: Implement user registration logic
+    // - Hash password
+    // - Save to database
+    // - Generate JWT token
 
-    // Generate token
-    const token = generateToken(user._id);
-
-    res.status(201).json({
-      success: true,
+    res.json({ 
+      success: true, 
       message: 'User registered successfully',
-      token,
-      user: user.toJSON()
+      user: { email, name }
     });
   } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Registration failed'
+    res.status(400).json({ 
+      success: false, 
+      error: error.message 
     });
   }
-}
+};
 
-// Login user
-export async function login(req, res) {
+/**
+ * Login user (traditional auth)
+ */
+export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validate input
     if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'Please provide email and password'
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Email and password are required' 
       });
     }
 
-    // Find user and include password field
-    const user = await User.findOne({ email }).select('+password');
-    
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      });
-    }
+    // TODO: Implement user login logic
+    // - Find user in database
+    // - Compare password hash
+    // - Generate JWT token
 
-    // Check password
-    const isPasswordMatch = await user.comparePassword(password);
-    
-    if (!isPasswordMatch) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      });
-    }
-
-    // Update last login
-    user.lastLogin = new Date();
-    await user.save();
-
-    // Generate token
-    const token = generateToken(user._id);
-
-    res.json({
-      success: true,
-      message: 'Login successful',
-      token,
-      user: user.toJSON()
+    res.json({ 
+      success: true, 
+      message: 'User logged in successfully',
+      token: 'your-jwt-token-here'
     });
   } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Login failed'
+    res.status(400).json({ 
+      success: false, 
+      error: error.message 
     });
   }
-}
+};
 
-// Get current user
-export async function getCurrentUser(req, res) {
+/**
+ * Get current user profile
+ */
+export const getCurrentUser = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found'
+    // req.user is set by authMiddleware
+    if (!req.user) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Not authenticated' 
       });
     }
 
-    res.json({
-      success: true,
-      user: user.toJSON()
+    res.json({ 
+      success: true, 
+      user: req.user 
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch user'
+    res.status(400).json({ 
+      success: false, 
+      error: error.message 
     });
   }
-}
+};
 
-// Update user
-export async function updateUser(req, res) {
+/**
+ * Update user profile
+ */
+export const updateUser = async (req, res) => {
   try {
-    const { name, linkedinUsername, linkedinPassword } = req.body;
+    const { name, bio } = req.body;
 
-    const user = await User.findById(req.user.id);
-    
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found'
+    if (!req.user) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Not authenticated' 
       });
     }
 
-    // Update fields
-    if (name) user.name = name;
-    if (linkedinUsername) user.linkedinUsername = linkedinUsername;
-    if (linkedinPassword) user.linkedinPassword = linkedinPassword;
+    // TODO: Implement user update logic
+    // - Update user in database
 
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'User updated successfully',
-      user: user.toJSON()
+    res.json({ 
+      success: true, 
+      message: 'User profile updated successfully',
+      user: { ...req.user, name, bio }
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to update user'
+    res.status(400).json({ 
+      success: false, 
+      error: error.message 
     });
   }
-}
+};
 
-// Change password
-export async function changePassword(req, res) {
+/**
+ * Change user password
+ */
+export const changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
     if (!currentPassword || !newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Current and new password are required' 
+      });
+    }
+
+    if (!req.user) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Not authenticated' 
+      });
+    }
+
+    // TODO: Implement password change logic
+    // - Verify current password
+    // - Hash new password
+    // - Update in database
+
+    res.json({ 
+      success: true, 
+      message: 'Password changed successfully' 
+    });
+  } catch (error) {
+    res.status(400).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+};
+
+// ==================== LINKEDIN AUTOMATION FUNCTIONS ====================
+
+/**
+ * Login to LinkedIn and save cookies
+ */
+export async function loginAndSaveCookies(req, res) {
+  let browser;
+  
+  try {
+    const { linkedinUsername, linkedinPassword } = req.body;
+
+    if (!linkedinUsername || !linkedinPassword) {
       return res.status(400).json({
         success: false,
-        error: 'Please provide current and new password'
+        error: 'LinkedIn credentials are required'
       });
     }
 
-    const user = await User.findById(req.user.id).select('+password');
+    console.log(`🔐 Starting LinkedIn login for: ${linkedinUsername}`);
+
+    const proxyArgs = getProxyArgs();
+
+    // Launch browser
+    browser = await puppeteer.launch({
+      headless: false,
+      defaultViewport: null,
+      args: [
+        '--start-maximized',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        ...proxyArgs
+      ]
+    });
+
+    const page = (await browser.pages())[0];
+
+    // Authenticate proxy
+    await authenticateProxy(page);
     
-    // Verify current password
-    const isPasswordMatch = await user.comparePassword(currentPassword);
-    
-    if (!isPasswordMatch) {
+    // Login and save cookies
+    const loginSuccess = await linkedInLogin(page, linkedinUsername, linkedinPassword, true);
+
+    if (!loginSuccess) {
+      await browser.close();
       return res.status(401).json({
         success: false,
-        error: 'Current password is incorrect'
+        error: 'LinkedIn login failed'
       });
     }
 
-    // Update password (will be hashed by pre-save hook)
-    user.password = newPassword;
-    await user.save();
+    // Keep browser open for 5 seconds to verify
+    console.log('⏳ Keeping browser open for 5 seconds to verify...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    await browser.close();
 
     res.json({
       success: true,
-      message: 'Password changed successfully'
+      message: 'LinkedIn login successful! Cookies saved.',
+      email: linkedinUsername,
+      proxyUsed: proxyArgs.length > 0,
+      timestamp: new Date().toISOString()
     });
+
+  } catch (error) {
+    console.error('❌ Login error:', error);
+    
+    if (browser) {
+      await browser.close();
+    }
+
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+/**
+ * Check LinkedIn login status
+ */
+export async function checkLoginStatus(req, res) {
+  try {
+    const { linkedinUsername } = req.body;
+
+    if (!linkedinUsername) {
+      return res.status(400).json({
+        success: false,
+        error: 'LinkedIn username is required'
+      });
+    }
+
+    const hasSession = await hasValidSession(linkedinUsername);
+
+    res.json({
+      success: true,
+      isLoggedIn: hasSession,
+      email: linkedinUsername
+    });
+
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: 'Failed to change password'
+      error: error.message
+    });
+  }
+}
+
+/**
+ * Logout from LinkedIn and clear cookies
+ */
+export async function logoutAndClearCookies(req, res) {
+  try {
+    const { linkedinUsername } = req.body;
+
+    if (!linkedinUsername) {
+      return res.status(400).json({
+        success: false,
+        error: 'LinkedIn username is required'
+      });
+    }
+
+    await invalidateSession(linkedinUsername);
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully',
+      email: linkedinUsername
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 }

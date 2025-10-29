@@ -1,116 +1,129 @@
 import { sleep, randomDelay } from '../utils/helpers.js';
+import { saveCookies, getCookies } from '../services/cookieService.js';
 
 /**
- * Type text with human-like speed and natural pauses
+ * Login to LinkedIn with cookie saving
  */
-async function humanLikeType(page, selector, text, options = {}) {
-  const element = await page.$(selector);
-  if (!element) return false;
-  
-  await element.click();
-  await sleep(randomDelay(500, 1000)); // Pause after clicking
-  
-  // Type character by character with variable delays
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    
-    // Longer pause for spaces (thinking time)
-    if (char === ' ') {
-      await element.type(char, { delay: randomDelay(150, 300) });
-    }
-    // Normal typing speed with variation
-    else {
-      await element.type(char, { delay: randomDelay(80, 200) });
-    }
-    
-    // Random pause every few characters (like real typing)
-    if (i > 0 && i % randomDelay(8, 15) === 0) {
-      await sleep(randomDelay(200, 500));
-    }
-  }
-  
-  await sleep(randomDelay(300, 700)); // Pause after typing
-  return true;
-}
-
-export async function linkedInLogin(page) {
+export async function linkedInLogin(page, username, password, saveCookiesToDB = true) {
   try {
-    console.log('🔐 Navigating to LinkedIn login page...');
-    await page.goto("https://www.linkedin.com/login", { 
-      waitUntil: "networkidle2",
-      timeout: 60000 
-    });
+    console.log('🔐 Checking for existing session...');
 
-    await page.locator('input[name="session_key"]').wait();
+    // Try to load existing cookies from database
+    const savedCookies = await getCookies(username);
 
-    // Check if manual login is needed
-    if (!process.env.LINKEDIN_USERNAME || !process.env.LINKEDIN_PASSWORD) {
-      console.log('⚠️ No credentials found in .env file');
-      console.log('⏳ Please login manually (including CAPTCHA/2FA). Waiting 60 seconds...');
-      await sleep(60000);
-      return true;
-    }
+    if (savedCookies && savedCookies.length > 0) {
+      console.log('✅ Found saved cookies, attempting to reuse...');
+      
+      try {
+        await page.setCookie(...savedCookies);
+        await page.goto('https://www.linkedin.com/feed/', { 
+          waitUntil: 'networkidle2',
+          timeout: 30000 
+        });
 
-    console.log('🔑 Attempting automatic login...');
-    console.log('⌨️ Typing username slowly (human-like)...');
-    
-    // Type username with human-like speed
-    const usernameTyped = await humanLikeType(
-      page, 
-      'input[name="session_key"]', 
-      process.env.LINKEDIN_USERNAME
-    );
-    
-    if (!usernameTyped) {
-      console.log('❌ Could not type username');
-      return false;
-    }
-    
-    // Random pause between fields (like a human)
-    console.log('💭 Pausing before password...');
-    await sleep(randomDelay(800, 1500));
-    
-    console.log('🔒 Typing password slowly...');
-    
-    // Type password with human-like speed
-    const passwordTyped = await humanLikeType(
-      page,
-      'input[name="session_password"]',
-      process.env.LINKEDIN_PASSWORD
-    );
-    
-    if (!passwordTyped) {
-      console.log('❌ Could not type password');
-      return false;
-    }
-
-    // Pause before clicking (like reading the button)
-    console.log('👀 About to click login button...');
-    await sleep(randomDelay(1000, 2000));
-    
-    await page.locator('button[type="submit"]').click();
-    
-    console.log('⏳ Waiting for login... If CAPTCHA appears, solve it manually.');
-    console.log('⏳ Waiting up to 60 seconds for login completion...');
-    
-    try {
-      await page.waitForNavigation({ 
-        waitUntil: "networkidle2", 
-        timeout: 60000 
-      });
-      console.log('✅ Login successful!');
-    } catch (navError) {
-      if (navError.message.includes("timeout") || navError.message.includes("Timeout")) {
-        console.log("⚠️ Navigation timeout - assuming login success...");
-      } else {
-        throw navError;
+        // Check if still logged in
+        const currentUrl = page.url();
+        if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
+          console.log('✅ Logged in successfully using saved cookies!');
+          return true;
+        } else {
+          console.log('⚠️ Saved cookies expired, logging in fresh...');
+        }
+      } catch (error) {
+        console.log('⚠️ Error using saved cookies, logging in fresh...');
       }
     }
 
-    await sleep(3000);
+    // Fresh login
+    console.log('🔐 Navigating to LinkedIn login page...');
+    await page.goto('https://www.linkedin.com/login', { 
+      waitUntil: 'networkidle2',
+      timeout: 60000 
+    });
+
+    await sleep(randomDelay(2000, 3000));
+
+    console.log('🔑 Attempting automatic login...');
+
+    // Type username
+    const usernameInput = await page.$('#username');
+    if (!usernameInput) {
+      throw new Error('Username input not found');
+    }
+
+    console.log('⌨️ Typing username slowly (human-like)...');
+    await usernameInput.click();
+    await sleep(randomDelay(500, 1000));
+
+    for (const char of username) {
+      await page.keyboard.type(char);
+      await sleep(randomDelay(80, 150));
+    }
+
+    console.log('💭 Pausing before password...');
+    await sleep(randomDelay(1000, 2000));
+
+    // Type password
+    const passwordInput = await page.$('#password');
+    if (!passwordInput) {
+      throw new Error('Password input not found');
+    }
+
+    console.log('🔒 Typing password slowly...');
+    await passwordInput.click();
+    await sleep(randomDelay(500, 1000));
+
+    for (const char of password) {
+      await page.keyboard.type(char);
+      await sleep(randomDelay(80, 150));
+    }
+
+    await sleep(randomDelay(1000, 1500));
+
+    // Click login button
+    console.log('👀 About to click login button...');
+    const loginButton = await page.$('button[type="submit"]');
+    if (!loginButton) {
+      throw new Error('Login button not found');
+    }
+
+    await loginButton.click();
+
+    console.log('⏳ Waiting for login... If CAPTCHA appears, solve it manually.');
+    console.log('⏳ Waiting up to 60 seconds for login completion...');
+
+    // Wait for navigation or timeout
+    try {
+      await page.waitForNavigation({ 
+        waitUntil: 'networkidle2', 
+        timeout: 60000 
+      });
+    } catch (navError) {
+      console.log('⚠️ Navigation timeout - assuming login success...');
+    }
+
+    await sleep(randomDelay(3000, 5000));
+
+    // Verify login
+    const currentUrl = page.url();
+    if (!currentUrl.includes('/feed') && !currentUrl.includes('/mynetwork')) {
+      throw new Error('Login may have failed - not on expected page');
+    }
+
+    console.log('✅ Login successful!');
+
+    // Save cookies to database
+    if (saveCookiesToDB) {
+      console.log('💾 Saving cookies to database...');
+      const cookies = await page.cookies();
+      await saveCookies(username, cookies);
+      console.log('✅ Cookies saved successfully!');
+    }
+
     return true;
+
   } catch (error) {
-    console.error('❌ Login failed:', error.message);
+    console.error('❌ Login error:', error.message);
     return false;
   }
 }

@@ -8,6 +8,8 @@ import { extractPostContent } from './services/extractPostContent.js';
 import { evaluatePost, generateComment } from './services/aiService.js';
 import { sleep, randomDelay, extractPostUrl, extractAuthorName } from './utils/helpers.js';
 import { logActivity, getActivityStats, hasInteractedWithPost } from './utils/activityLogger.js';
+import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
+import { getCookies } from './utils/cookieManager.js';
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
@@ -21,6 +23,25 @@ async function scrollOnce(page) {
 }
 
 async function linkedInAutomation() {
+  // ========== GET CREDENTIALS FROM COMMAND LINE ==========
+  const args = process.argv.slice(2);
+  const username = args[0];
+  const password = args[1];
+  const maxPostsArg = args[2];
+  
+  if (!username || !password) {
+    console.error('❌ Error: LinkedIn credentials required');
+    console.error('Usage: node index.js <email> <password> [maxPosts]');
+    process.exit(1);
+  }
+
+  console.log(`\n🔐 Starting automation for: ${username}`);
+  
+  // ========== GET PROXY CONFIGURATION ==========
+  const proxyArgs = getProxyArgs();
+  console.log('🔒 Proxy:', proxyArgs.length > 0 ? 'Enabled' : 'Disabled');
+  
+  // ========== LAUNCH BROWSER ==========
   const browser = await puppeteer.launch({
     headless: false,
     defaultViewport: null,
@@ -29,16 +50,23 @@ async function linkedInAutomation() {
       "--no-sandbox", 
       "--disable-setuid-sandbox",
       "--disable-blink-features=AutomationControlled",
-      "--lang=en-US",  // Force English language
-      "--accept-lang=en-US,en;q=0.9"  // Accept English
+      "--lang=en-US",
+      "--accept-lang=en-US,en;q=0.9",
+      ...proxyArgs
     ],
   });
 
   try {
     const page = (await browser.pages())[0];
-    page.setDefaultNavigationTimeout(60000);
+    page.setDefaultNavigationTimeout(90000);
 
-    // Set English user agent and language headers
+    // ========== PROXY AUTHENTICATION ==========
+    if (proxyArgs.length > 0) {
+      await authenticateProxy(page);
+      await testProxyConnection(page);
+    }
+
+    // ========== BROWSER CONFIGURATION ==========
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9'
     });
@@ -47,7 +75,6 @@ async function linkedInAutomation() {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    // Override navigator.language and languages
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'language', {
         get: function() { return 'en-US'; }
@@ -58,24 +85,60 @@ async function linkedInAutomation() {
     });
 
     console.log('\n🚀 LinkedIn AI-Powered Automation Bot Started\n');
-    console.log('=' .repeat(60));
+    console.log('='.repeat(60));
     console.log('🌐 Language: English (en-US)');
     console.log('🤖 AI will read each post and decide engagement');
     console.log('👍 Will LIKE posts scoring 6+ out of 10');
     console.log('💬 Will COMMENT on posts scoring 9+ out of 10');
     console.log('💼 Will always COMMENT on job posts');
-    console.log('=' .repeat(60));
+    console.log('='.repeat(60));
 
-    const loggedIn = await linkedInLogin(page);
+    // ========== LOGIN ==========
+    let loggedIn = false;
+    const useSavedCookies = true;
+
+    // Try to use saved cookies first
+    if (useSavedCookies && username) {
+      console.log('\n🍪 Attempting to use saved cookies...');
+      const savedCookies = await getCookies(username);
+      
+      if (savedCookies && savedCookies.length > 0) {
+        try {
+          await page.setCookie(...savedCookies);
+          await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
+            waitUntil: 'networkidle2',
+            timeout: 60000 
+          });
+
+          const currentUrl = page.url();
+          if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
+            console.log('✅ Logged in successfully using saved cookies!');
+            loggedIn = true;
+          } else {
+            console.log('⚠️ Saved cookies expired, will login with credentials...');
+          }
+        } catch (error) {
+          console.log('⚠️ Error using saved cookies, will login with credentials...');
+        }
+      } else {
+        console.log('⚠️ No saved cookies found, will login with credentials...');
+      }
+    }
+
+    // If cookies didn't work, login normally
     if (!loggedIn) {
-      console.log('❌ Login failed. Exiting...');
-      await browser.close();
-      return;
+      console.log('\n🔐 Logging in with credentials...');
+      loggedIn = await linkedInLogin(page, username, password, true);
+      
+      if (!loggedIn) {
+        console.log('❌ Login failed. Exiting...');
+        await browser.close();
+        return;
+      }
     }
 
     console.log('\n🏠 Navigating to LinkedIn feed...');
     try {
-      // Navigate to English version explicitly
       await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
         waitUntil: 'networkidle2', 
         timeout: 60000 
@@ -91,7 +154,8 @@ async function linkedInAutomation() {
     console.log('✅ Feed loaded successfully!');
     await sleep(5000);
 
-    const maxPosts = parseInt(process.env.MAX_POSTS) || 10;
+    // ========== AUTOMATION LOOP ==========
+    const maxPosts = parseInt(maxPostsArg || process.env.MAX_POSTS || 10);
     let postsViewed = 0;
     let postsEvaluated = 0;
     let likesGiven = 0;
@@ -300,11 +364,11 @@ async function linkedInAutomation() {
     await sleep(15000);
 
     console.log('👋 Closing browser...');
-    // await browser.close();
+    await browser.close();
     
   } catch (err) {
     console.error('\n❌ CRITICAL ERROR:');
-    console.error('=' .repeat(60));
+    console.error('='.repeat(60));
     console.error('Error message:', err.message);
     console.error('Stack trace:', err.stack);
     console.error('='.repeat(60));

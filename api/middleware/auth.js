@@ -7,7 +7,9 @@ export async function authMiddleware(req, res, next) {
     const apiKey = req.headers['x-api-key'] || req.query.api_key;
     
     if (apiKey && apiKey === process.env.API_KEY) {
-      // API key authentication (legacy)
+      // For API key auth, create a dummy user
+      // You might want to create a system user in your database for this
+      req.user = { id: 'system', email: 'system@localhost' };
       return next();
     }
 
@@ -21,7 +23,7 @@ export async function authMiddleware(req, res, next) {
     if (!token) {
       return res.status(401).json({
         success: false,
-        error: 'Not authorized to access this route'
+        error: 'Not authorized - No token provided'
       });
     }
 
@@ -29,7 +31,7 @@ export async function authMiddleware(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
     // Get user from token
-    req.user = await User.findById(decoded.id);
+    req.user = await User.findById(decoded.id).select('-password');
     
     if (!req.user) {
       return res.status(401).json({
@@ -40,9 +42,10 @@ export async function authMiddleware(req, res, next) {
 
     next();
   } catch (error) {
+    console.error('Auth middleware error:', error.message);
     return res.status(401).json({
       success: false,
-      error: 'Not authorized to access this route'
+      error: 'Not authorized - Invalid token'
     });
   }
 }

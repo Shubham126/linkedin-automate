@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,8 +37,15 @@ class JobManager {
       console.log(`🚀 Starting job: ${jobId}`);
       console.log(`📄 Script: ${scriptPath}`);
 
+      const jobEnv = {
+        ...process.env,
+        ...params,
+        USE_PROXY: process.env.USE_PROXY || 'false',
+        PROXY_SERVER: process.env.PROXY_SERVER || ''
+      };
+
       const child = spawn('node', [scriptPath], {
-        env: { ...process.env, ...params },
+        env: jobEnv,
         cwd: path.join(__dirname, '../')
       });
 

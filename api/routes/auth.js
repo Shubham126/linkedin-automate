@@ -1,22 +1,19 @@
 import express from 'express';
 import {
-  register,
-  login,
-  getCurrentUser,
-  updateUser,
-  changePassword
+  loginAndSaveCookies, 
+  checkLoginStatus, 
+  logoutAndClearCookies 
 } from '../controllers/authController.js';
-import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Public routes
-router.post('/register', register);
-router.post('/login', login);
+// Login and save cookies
+router.post('/linkedin/login', loginAndSaveCookies);
 
-// Protected routes
-router.get('/me', authMiddleware, getCurrentUser);
-router.put('/update', authMiddleware, updateUser);
-router.put('/change-password', authMiddleware, changePassword);
+// Check if logged in
+router.post('/linkedin/status', checkLoginStatus);
+
+// Logout and clear cookies
+router.post('/linkedin/logout', logoutAndClearCookies);
 
 export default router;
