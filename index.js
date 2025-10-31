@@ -94,72 +94,81 @@ async function linkedInAutomation() {
 
     let loggedIn = false;
 
-    // ==================== TRY TO USE SAVED COOKIES FIRST ====================
+  // ==================== TRY TO USE SAVED COOKIES FIRST ====================
+
+
     if (useSavedCookies && username) {
-      console.log('\n🍪 Checking for saved session...');
-      const savedCookies = await getCookies(username);
+    console.log('\n🍪 Checking for saved session...');
+    const savedCookies = await getCookies(username);
+    
+    if (savedCookies && savedCookies.length > 0) {
+      console.log(`✅ Found ${savedCookies.length} saved cookies`);
+      console.log('🔄 Attempting to restore session...');
       
-      if (savedCookies && savedCookies.length > 0) {
-        console.log(`✅ Found ${savedCookies.length} saved cookies`);
-        console.log('🔄 Attempting to restore session...');
+      try {
+        // Set cookies before navigation
+        await page.setCookie(...savedCookies);
         
-        try {
-          // Set cookies before navigation
-          await page.setCookie(...savedCookies);
-          
-          // Navigate to LinkedIn feed
-          await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
-            waitUntil: 'networkidle2',
-            timeout: 60000 
-          });
+        // Increased timeout for slow proxies
+        console.log('⏳ Navigating to LinkedIn (this may take a moment with proxy)...');
+        await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
+          waitUntil: 'domcontentloaded', // Changed from networkidle2
+          timeout: 120000  // Increased from 60000 to 120 seconds
+        });
 
-          // Wait a bit for page to load
-          await sleep(3000);
+        await sleep(5000); // Increased from 3000
 
-          const currentUrl = page.url();
-          console.log(`📍 Current URL: ${currentUrl}`);
+        const currentUrl = page.url();
+        console.log(`📍 Current URL: ${currentUrl}`);
 
-          // Check if we're logged in
-          if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork') || currentUrl.includes('/in/')) {
-            console.log('✅ Session restored successfully! Skipping login.');
-            loggedIn = true;
-          } else if (currentUrl.includes('/login') || currentUrl.includes('/checkpoint')) {
-            console.log('⚠️ Cookies expired or invalid, need fresh login');
-            loggedIn = false;
-          } else {
-            console.log(`⚠️ Unexpected page: ${currentUrl}, will try login`);
-            loggedIn = false;
-          }
-        } catch (error) {
-          console.log(`⚠️ Error restoring session: ${error.message}`);
+        // Check if we're logged in
+        if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork') || currentUrl.includes('/in/')) {
+          console.log('✅ Session restored successfully! Skipping login.');
+          loggedIn = true;
+        } else if (currentUrl.includes('/login') || currentUrl.includes('/checkpoint')) {
+          console.log('⚠️ Cookies expired or invalid, need fresh login');
+          loggedIn = false;
+        } else {
+          console.log(`⚠️ Unexpected page: ${currentUrl}, will try login`);
           loggedIn = false;
         }
-      } else {
-        console.log('ℹ️ No saved session found');
+      } catch (error) {
+        console.log(`⚠️ Error restoring session: ${error.message}`);
+        console.log('⚠️ Cookies may be invalid, attempting fresh login...');
+        loggedIn = false;
       }
     } else {
-      console.log('ℹ️ Saved cookies disabled in config');
+      console.log('ℹ️ No saved session found');
+    }
+  } else {
+    console.log('ℹ️ Saved cookies disabled in config');
+  }
+
+  // ==================== LOGIN IF COOKIES DIDN'T WORK ====================
+  if (!loggedIn) {
+    if (!password) {
+      console.error('❌ Password required for fresh login');
+      await browser.close();
+      return;
     }
 
-    // ==================== LOGIN IF COOKIES DIDN'T WORK ====================
+    console.log('\n🔐 Starting fresh login...');
+    loggedIn = await linkedInLogin(page, username, password, true);
+    
     if (!loggedIn) {
-      console.log('\n🔐 Starting fresh login...');
-      loggedIn = await linkedInLogin(page, username, password, true);
-      
-      if (!loggedIn) {
-        console.log('❌ Login failed. Exiting...');
-        await browser.close();
-        return;
-      }
-
-      console.log('✅ Login successful!');
-      
-      // Save cookies after successful login
-      console.log('💾 Saving session cookies to database...');
-      const cookies = await page.cookies();
-      await saveCookies(username, cookies);
-      console.log(`✅ Saved ${cookies.length} cookies for future use`);
+      console.log('❌ Login failed. Exiting...');
+      await browser.close();
+      return;
     }
+
+    console.log('✅ Login successful!');
+    
+    // Save cookies after successful login
+    console.log('💾 Saving session cookies to database...');
+    const cookies = await page.cookies();
+    await saveCookies(username, cookies);
+    console.log(`✅ Saved ${cookies.length} cookies for future use`);
+  }
 
     // ==================== ENSURE WE'RE ON THE FEED ====================
     console.log('\n🏠 Navigating to LinkedIn feed...');

@@ -1,9 +1,11 @@
-import puppeteer from "puppeteer-extra";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import dotenv from "dotenv";
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import dotenv from 'dotenv';
 import { linkedInLogin } from './actions/login.js';
 import { saveProfileToSheet } from './services/googlePeopleSheetService.js';
 import { sleep, randomDelay } from './utils/helpers.js';
+import { getCookies, saveCookies } from './services/cookieService.js';
+import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
@@ -203,27 +205,98 @@ async function goToNextPage(page) {
  * Main scraping function
  */
 async function scrapeLinkedInPeopleProfiles() {
-  console.log('\n🎯 LinkedIn People Profile Scraper');
-  console.log('🔍 Searches for people and extracts profile data');
-  console.log('📊 Saves to Google Sheets');
-  console.log('📄 Supports pagination across multiple pages');
-  console.log('═'.repeat(60) + '\n');
+  const proxyArgs = getProxyArgs();
 
   const browser = await puppeteer.launch({
     headless: false,
     defaultViewport: null,
     args: [
-      "--start-maximized",
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-blink-features=AutomationControlled",
-      "--lang=en-US"
-    ],
+      '--start-maximized',
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--lang=en-US',
+      ...proxyArgs
+    ]
   });
 
   try {
     const page = (await browser.pages())[0];
     page.setDefaultNavigationTimeout(90000);
+    
+    await authenticateProxy(page);
+    if (proxyArgs.length > 0) {
+      await testProxyConnection(page);
+    }
+
+    console.log('\n🎯 LinkedIn People Profile Scraper');
+    console.log('🔍 Searches for people and extracts profile data');
+    console.log('📊 Saves to Google Sheets');
+    console.log('📄 Supports pagination across multiple pages');
+    console.log('═'.repeat(60) + '\n');
+
+    // Get credentials from environment (passed by job manager from API)
+    const username = process.env.LINKEDIN_USERNAME;
+    const password = process.env.LINKEDIN_PASSWORD;
+    const useSavedCookies = process.env.USE_SAVED_COOKIES !== 'false';
+
+    if (!username) {
+      console.error('❌ LINKEDIN_USERNAME is required');
+      await browser.close();
+      return;
+    }
+
+    console.log(`👤 Scraping with account: ${username}`);
+
+    let loggedIn = false;
+
+    // Try to use saved cookies first
+    if (useSavedCookies) {
+      console.log('🍪 Checking for saved session...');
+      const savedCookies = await getCookies(username);
+      
+      if (savedCookies && savedCookies.length > 0) {
+        console.log('✅ Found saved cookies, attempting to restore session...');
+        
+        try {
+          await page.setCookie(...savedCookies);
+          await page.goto('https://www.linkedin.com/feed/', { 
+            waitUntil: 'networkidle2',
+            timeout: 30000 
+          });
+
+          const currentUrl = page.url();
+          if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
+            console.log('✅ Session restored successfully!');
+            loggedIn = true;
+          }
+        } catch (error) {
+          console.log('⚠️ Error restoring session, will login fresh');
+        }
+      }
+    }
+
+    // Login if cookies didn't work
+    if (!loggedIn) {
+      if (!password) {
+        console.error('❌ LINKEDIN_PASSWORD is required for fresh login');
+        await browser.close();
+        return;
+      }
+
+      console.log('🔐 Logging in...');
+      loggedIn = await linkedInLogin(page, username, password, true);
+      
+      if (!loggedIn) {
+        console.log('❌ Login failed');
+        await browser.close();
+        return;
+      }
+
+      // Save cookies after successful login
+      const cookies = await page.cookies();
+      await saveCookies(username, cookies);
+    }
 
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9'
@@ -233,19 +306,13 @@ async function scrapeLinkedInPeopleProfiles() {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    console.log('🔐 Logging in...');
-    const loggedIn = await linkedInLogin(page);
-    if (!loggedIn) {
-      console.log('❌ Login failed');
-      await browser.close();
-      return;
-    }
-    console.log('✅ Login successful!\n');
-
+    // Get search parameters
     const searchKeyword = process.env.SEARCH_KEYWORD || 'vibe coding';
     const maxProfiles = parseInt(process.env.MAX_PROFILES_TO_SCRAPE) || 20;
 
-    console.log(`🔍 Searching for: "${searchKeyword}"`);
+    console.log(`\n🔍 Searching for: "${searchKeyword}"`);
+    console.log(`🎯 Target: ${maxProfiles} profiles`);
+
     const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(searchKeyword)}`;
     
     try {
@@ -280,7 +347,7 @@ async function scrapeLinkedInPeopleProfiles() {
     let currentPage = 1;
     let hasMorePages = true;
 
-        while (profilesScraped < maxProfiles && hasMorePages) {
+    while (profilesScraped < maxProfiles && hasMorePages) {
       console.log(`\n📄 Processing Page ${currentPage}`);
       console.log('─'.repeat(60));
 
@@ -425,7 +492,6 @@ async function scrapeLinkedInPeopleProfiles() {
       }
     }
 
-
     console.log('\n' + '═'.repeat(60));
     console.log('✅ SCRAPING COMPLETED!');
     console.log('═'.repeat(60));
@@ -437,10 +503,11 @@ async function scrapeLinkedInPeopleProfiles() {
     console.log('═'.repeat(60));
 
     await sleep(10000);
+    await browser.close();
 
-  } catch (err) {
-    console.error('\n❌ ERROR:', err.message);
-    console.error(err.stack);
+  } catch (error) {
+    console.error('\n❌ Error:', error.message);
+    await browser.close();
   }
 }
 

@@ -1,6 +1,6 @@
-import puppeteer from "puppeteer-extra";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import dotenv from "dotenv";
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import dotenv from 'dotenv';
 import { linkedInLogin } from './actions/login.js';
 import { likePost } from './actions/like.js';
 import { commentOnPost } from './actions/comment.js';
@@ -8,6 +8,8 @@ import { extractPostContent } from './services/extractPostContent.js';
 import { evaluatePost, generateComment } from './services/aiService.js';
 import { sleep, randomDelay, extractPostUrl, extractAuthorName } from './utils/helpers.js';
 import { logActivity, getActivityStats, hasInteractedWithPost } from './utils/activityLogger.js';
+import { getCookies, saveCookies } from './services/cookieService.js';
+import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
@@ -55,27 +57,98 @@ async function scrollSearchResults(page) {
  * Main search and engage function
  */
 async function searchAndEngageAutomation() {
-  console.log('\n🎯 LinkedIn Search & Engage Automation');
-  console.log('🔍 Searches for specific keywords and engages intelligently');
-  console.log('🤖 AI evaluates each post before engaging');
-  console.log('⚠️  Educational purposes only - violates LinkedIn ToS');
-  console.log('═'.repeat(60) + '\n');
+  const proxyArgs = getProxyArgs();
 
   const browser = await puppeteer.launch({
     headless: false,
     defaultViewport: null,
     args: [
-      "--start-maximized",
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-blink-features=AutomationControlled",
-      "--lang=en-US"
-    ],
+      '--start-maximized',
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--lang=en-US',
+      ...proxyArgs
+    ]
   });
 
   try {
     const page = (await browser.pages())[0];
-    page.setDefaultNavigationTimeout(60000);
+    page.setDefaultNavigationTimeout(90000);
+    
+    await authenticateProxy(page);
+    if (proxyArgs.length > 0) {
+      await testProxyConnection(page);
+    }
+
+    console.log('\n🎯 LinkedIn Search & Engage Automation');
+    console.log('🔍 Searches for specific keywords and engages intelligently');
+    console.log('🤖 AI evaluates each post before engaging');
+    console.log('⚠️  Educational purposes only - violates LinkedIn ToS');
+    console.log('═'.repeat(60) + '\n');
+
+    // Get credentials from environment (passed by job manager from API)
+    const username = process.env.LINKEDIN_USERNAME;
+    const password = process.env.LINKEDIN_PASSWORD;
+    const useSavedCookies = process.env.USE_SAVED_COOKIES !== 'false';
+
+    if (!username) {
+      console.error('❌ LINKEDIN_USERNAME is required');
+      await browser.close();
+      return;
+    }
+
+    console.log(`👤 Engaging with account: ${username}`);
+
+    let loggedIn = false;
+
+    // Try to use saved cookies first
+    if (useSavedCookies) {
+      console.log('🍪 Checking for saved session...');
+      const savedCookies = await getCookies(username);
+      
+      if (savedCookies && savedCookies.length > 0) {
+        console.log('✅ Found saved cookies, attempting to restore session...');
+        
+        try {
+          await page.setCookie(...savedCookies);
+          await page.goto('https://www.linkedin.com/feed/', { 
+            waitUntil: 'networkidle2',
+            timeout: 30000 
+          });
+
+          const currentUrl = page.url();
+          if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
+            console.log('✅ Session restored successfully!');
+            loggedIn = true;
+          }
+        } catch (error) {
+          console.log('⚠️ Error restoring session, will login fresh');
+        }
+      }
+    }
+
+    // Login if cookies didn't work
+    if (!loggedIn) {
+      if (!password) {
+        console.error('❌ LINKEDIN_PASSWORD is required for fresh login');
+        await browser.close();
+        return;
+      }
+
+      console.log('🔐 Logging in to LinkedIn...');
+      loggedIn = await linkedInLogin(page, username, password, true);
+      
+      if (!loggedIn) {
+        console.log('❌ Login failed. Exiting...');
+        await browser.close();
+        return;
+      }
+
+      // Save cookies after successful login
+      const cookies = await page.cookies();
+      await saveCookies(username, cookies);
+    }
 
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9'
@@ -85,14 +158,6 @@ async function searchAndEngageAutomation() {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    // Login
-    console.log('🔐 Logging in to LinkedIn...');
-    const loggedIn = await linkedInLogin(page);
-    if (!loggedIn) {
-      console.log('❌ Login failed. Exiting...');
-      await browser.close();
-      return;
-    }
     console.log('✅ Logged in successfully!\n');
 
     // Get search keyword from environment or use default
@@ -323,14 +388,15 @@ async function searchAndEngageAutomation() {
     await sleep(15000);
 
     console.log('👋 Closing browser...');
-    // await browser.close();
+    await browser.close();
 
-  } catch (err) {
+  } catch (error) {
     console.error('\n❌ CRITICAL ERROR:');
     console.error('═'.repeat(60));
-    console.error('Error message:', err.message);
-    console.error('Stack trace:', err.stack);
+    console.error('Error message:', error.message);
+    console.error('Stack trace:', error.stack);
     console.error('═'.repeat(60));
+    await browser.close();
   }
 }
 
