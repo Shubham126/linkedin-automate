@@ -1,6 +1,7 @@
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import dotenv from "dotenv";
+import connectDB from './config/database.js'; 
 import { linkedInLogin } from './actions/login.js';
 import { likePost } from './actions/like.js';
 import { commentOnPost } from './actions/comment.js';
@@ -8,11 +9,16 @@ import { extractPostContent } from './services/extractPostContent.js';
 import { evaluatePost, generateComment } from './services/aiService.js';
 import { sleep, randomDelay, extractPostUrl, extractAuthorName } from './utils/helpers.js';
 import { logActivity, getActivityStats, hasInteractedWithPost } from './utils/activityLogger.js';
+import { getCookies, saveCookies } from './services/cookieService.js';  // ← FIX THIS IMPORT
 import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
-import { getCookies } from './utils/cookieManager.js';
+
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
+
+connectDB().catch(() => {
+  console.log('⚠️ MongoDB unavailable - using file-based storage');
+});
 
 async function scrollOnce(page) {
   console.log('🐭 Scrolling down...');
@@ -23,25 +29,8 @@ async function scrollOnce(page) {
 }
 
 async function linkedInAutomation() {
-  // ========== GET CREDENTIALS FROM COMMAND LINE ==========
-  const args = process.argv.slice(2);
-  const username = args[0];
-  const password = args[1];
-  const maxPostsArg = args[2];
-  
-  if (!username || !password) {
-    console.error('❌ Error: LinkedIn credentials required');
-    console.error('Usage: node index.js <email> <password> [maxPosts]');
-    process.exit(1);
-  }
-
-  console.log(`\n🔐 Starting automation for: ${username}`);
-  
-  // ========== GET PROXY CONFIGURATION ==========
   const proxyArgs = getProxyArgs();
-  console.log('🔒 Proxy:', proxyArgs.length > 0 ? 'Enabled' : 'Disabled');
   
-  // ========== LAUNCH BROWSER ==========
   const browser = await puppeteer.launch({
     headless: false,
     defaultViewport: null,
@@ -60,13 +49,15 @@ async function linkedInAutomation() {
     const page = (await browser.pages())[0];
     page.setDefaultNavigationTimeout(90000);
 
-    // ========== PROXY AUTHENTICATION ==========
+    // Authenticate proxy if needed
+    await authenticateProxy(page);
+
+    // Test proxy connection
     if (proxyArgs.length > 0) {
-      await authenticateProxy(page);
       await testProxyConnection(page);
     }
 
-    // ========== BROWSER CONFIGURATION ==========
+    // Set English user agent and language headers
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9'
     });
@@ -75,6 +66,7 @@ async function linkedInAutomation() {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
+    // Override navigator.language and languages
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'language', {
         get: function() { return 'en-US'; }
@@ -87,47 +79,71 @@ async function linkedInAutomation() {
     console.log('\n🚀 LinkedIn AI-Powered Automation Bot Started\n');
     console.log('='.repeat(60));
     console.log('🌐 Language: English (en-US)');
+    console.log('🌐 Proxy: ' + (proxyArgs.length > 0 ? 'Enabled' : 'Disabled'));
+    console.log('🤖 AI Provider: ' + (process.env.AI_PROVIDER || 'openrouter').toUpperCase());
+    console.log('🍪 Session Management: Enabled');
     console.log('🤖 AI will read each post and decide engagement');
     console.log('👍 Will LIKE posts scoring 6+ out of 10');
     console.log('💬 Will COMMENT on posts scoring 9+ out of 10');
     console.log('💼 Will always COMMENT on job posts');
     console.log('='.repeat(60));
 
-    // ========== LOGIN ==========
-    let loggedIn = false;
-    const useSavedCookies = true;
+    const username = process.env.LINKEDIN_USERNAME;
+    const password = process.env.LINKEDIN_PASSWORD;
+    const useSavedCookies = process.env.USE_SAVED_COOKIES !== 'false'; // Default to true
 
-    // Try to use saved cookies first
+    let loggedIn = false;
+
+    // ==================== TRY TO USE SAVED COOKIES FIRST ====================
     if (useSavedCookies && username) {
-      console.log('\n🍪 Attempting to use saved cookies...');
+      console.log('\n🍪 Checking for saved session...');
       const savedCookies = await getCookies(username);
       
       if (savedCookies && savedCookies.length > 0) {
+        console.log(`✅ Found ${savedCookies.length} saved cookies`);
+        console.log('🔄 Attempting to restore session...');
+        
         try {
+          // Set cookies before navigation
           await page.setCookie(...savedCookies);
+          
+          // Navigate to LinkedIn feed
           await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
             waitUntil: 'networkidle2',
             timeout: 60000 
           });
 
+          // Wait a bit for page to load
+          await sleep(3000);
+
           const currentUrl = page.url();
-          if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
-            console.log('✅ Logged in successfully using saved cookies!');
+          console.log(`📍 Current URL: ${currentUrl}`);
+
+          // Check if we're logged in
+          if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork') || currentUrl.includes('/in/')) {
+            console.log('✅ Session restored successfully! Skipping login.');
             loggedIn = true;
+          } else if (currentUrl.includes('/login') || currentUrl.includes('/checkpoint')) {
+            console.log('⚠️ Cookies expired or invalid, need fresh login');
+            loggedIn = false;
           } else {
-            console.log('⚠️ Saved cookies expired, will login with credentials...');
+            console.log(`⚠️ Unexpected page: ${currentUrl}, will try login`);
+            loggedIn = false;
           }
         } catch (error) {
-          console.log('⚠️ Error using saved cookies, will login with credentials...');
+          console.log(`⚠️ Error restoring session: ${error.message}`);
+          loggedIn = false;
         }
       } else {
-        console.log('⚠️ No saved cookies found, will login with credentials...');
+        console.log('ℹ️ No saved session found');
       }
+    } else {
+      console.log('ℹ️ Saved cookies disabled in config');
     }
 
-    // If cookies didn't work, login normally
+    // ==================== LOGIN IF COOKIES DIDN'T WORK ====================
     if (!loggedIn) {
-      console.log('\n🔐 Logging in with credentials...');
+      console.log('\n🔐 Starting fresh login...');
       loggedIn = await linkedInLogin(page, username, password, true);
       
       if (!loggedIn) {
@@ -135,14 +151,26 @@ async function linkedInAutomation() {
         await browser.close();
         return;
       }
+
+      console.log('✅ Login successful!');
+      
+      // Save cookies after successful login
+      console.log('💾 Saving session cookies to database...');
+      const cookies = await page.cookies();
+      await saveCookies(username, cookies);
+      console.log(`✅ Saved ${cookies.length} cookies for future use`);
     }
 
+    // ==================== ENSURE WE'RE ON THE FEED ====================
     console.log('\n🏠 Navigating to LinkedIn feed...');
     try {
-      await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
-        waitUntil: 'networkidle2', 
-        timeout: 60000 
-      });
+      const currentUrl = page.url();
+      if (!currentUrl.includes('/feed')) {
+        await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
+          waitUntil: 'networkidle2', 
+          timeout: 60000 
+        });
+      }
     } catch (error) {
       if (error.message.includes('timeout')) {
         console.log('⚠️ Navigation timeout, continuing...');
@@ -154,8 +182,8 @@ async function linkedInAutomation() {
     console.log('✅ Feed loaded successfully!');
     await sleep(5000);
 
-    // ========== AUTOMATION LOOP ==========
-    const maxPosts = parseInt(maxPostsArg || process.env.MAX_POSTS || 10);
+    // ==================== YOUR EXISTING AUTOMATION CODE ====================
+    const maxPosts = parseInt(process.env.MAX_POSTS) || 10;
     let postsViewed = 0;
     let postsEvaluated = 0;
     let likesGiven = 0;
@@ -358,6 +386,7 @@ async function linkedInAutomation() {
     console.log(`      • Unique Posts: ${activityStats.uniquePosts}`);
     console.log('\n' + '═'.repeat(60));
     console.log('📝 Detailed log saved in: activity-log.json');
+    console.log('📊 Session cookies saved in: MongoDB');
     console.log('═'.repeat(60));
 
     console.log('\n⏳ Browser will remain open for 15 seconds...');
@@ -377,6 +406,8 @@ async function linkedInAutomation() {
 
 console.log('\n🎯 LinkedIn AI-Powered Automation Bot');
 console.log('🤖 Reads every post like a human and decides engagement');
+console.log('🍪 Session management - skips login after first time');
+console.log('🌐 Proxy support enabled');
 console.log('⚠️  Educational purposes only - violates LinkedIn ToS');
 console.log('='.repeat(60) + '\n');
 

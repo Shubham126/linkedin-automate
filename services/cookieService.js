@@ -1,58 +1,110 @@
 import LinkedInSession from '../models/LinkedInSession.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Fallback to file-based storage if MongoDB fails
+const COOKIES_DIR = path.join(__dirname, '../.cookies');
+
+// Ensure cookies directory exists
+if (!fs.existsSync(COOKIES_DIR)) {
+  fs.mkdirSync(COOKIES_DIR, { recursive: true });
+}
 
 /**
- * Save cookies to database
+ * Save cookies (tries MongoDB first, falls back to file)
  */
 export async function saveCookies(email, cookies) {
   try {
     const cookiesString = JSON.stringify(cookies);
     
-    await LinkedInSession.findOneAndUpdate(
-      { email: email.toLowerCase() },
-      {
+    // Try MongoDB first
+    try {
+      await LinkedInSession.findOneAndUpdate(
+        { email: email.toLowerCase() },
+        {
+          cookies: cookiesString,
+          isValid: true,
+          lastUsed: new Date(),
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        },
+        { upsert: true, new: true, timeout: 5000 }
+      );
+
+      console.log(`✅ Cookies saved to MongoDB for: ${email}`);
+      return true;
+    } catch (mongoError) {
+      console.log(`⚠️ MongoDB unavailable, saving to file instead`);
+      
+      // Fallback to file storage
+      const filePath = path.join(COOKIES_DIR, `${email}.json`);
+      const sessionData = {
+        email: email.toLowerCase(),
         cookies: cookiesString,
         isValid: true,
-        lastUsed: new Date(),
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-      },
-      { upsert: true, new: true }
-    );
-
-    console.log(`✅ Cookies saved for: ${email}`);
-    return true;
+        lastUsed: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      };
+      
+      fs.writeFileSync(filePath, JSON.stringify(sessionData, null, 2));
+      console.log(`✅ Cookies saved to file for: ${email}`);
+      return true;
+    }
   } catch (error) {
-    console.error('❌ Error saving cookies:', error);
+    console.error('❌ Error saving cookies:', error.message);
     return false;
   }
 }
 
 /**
- * Get cookies from database
+ * Get cookies (tries MongoDB first, falls back to file)
  */
 export async function getCookies(email) {
   try {
-    const session = await LinkedInSession.findOne({ 
-      email: email.toLowerCase() 
-    });
+    // Try MongoDB first
+    try {
+      const session = await LinkedInSession.findOne({ 
+        email: email.toLowerCase() 
+      }).maxTimeMS(5000);
 
-    if (!session) {
-      console.log(`❌ No session found for: ${email}`);
-      return null;
+      if (session && !session.isExpired()) {
+        await session.updateOne({ lastUsed: new Date() });
+        console.log(`✅ Cookies retrieved from MongoDB for: ${email}`);
+        return JSON.parse(session.cookies);
+      }
+    } catch (mongoError) {
+      console.log(`⚠️ MongoDB unavailable, checking file storage`);
+      
+      // Fallback to file storage
+      const filePath = path.join(COOKIES_DIR, `${email}.json`);
+      
+      if (fs.existsSync(filePath)) {
+        const sessionData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        
+        // Check if expired
+        const expiresAt = new Date(sessionData.expiresAt);
+        if (new Date() > expiresAt || !sessionData.isValid) {
+          console.log(`❌ File session expired for: ${email}`);
+          fs.unlinkSync(filePath);
+          return null;
+        }
+
+        // Update last used
+        sessionData.lastUsed = new Date().toISOString();
+        fs.writeFileSync(filePath, JSON.stringify(sessionData, null, 2));
+
+        console.log(`✅ Cookies retrieved from file for: ${email}`);
+        return JSON.parse(sessionData.cookies);
+      }
     }
 
-    if (session.isExpired()) {
-      console.log(`❌ Session expired for: ${email}`);
-      await session.updateOne({ isValid: false });
-      return null;
-    }
-
-    // Update last used
-    await session.updateOne({ lastUsed: new Date() });
-
-    console.log(`✅ Cookies retrieved for: ${email}`);
-    return JSON.parse(session.cookies);
+    console.log(`❌ No session found for: ${email}`);
+    return null;
   } catch (error) {
-    console.error('❌ Error getting cookies:', error);
+    console.error('❌ Error getting cookies:', error.message);
     return null;
   }
 }
@@ -62,11 +114,22 @@ export async function getCookies(email) {
  */
 export async function invalidateSession(email) {
   try {
-    await LinkedInSession.updateOne(
-      { email: email.toLowerCase() },
-      { isValid: false }
-    );
-    console.log(`✅ Session invalidated for: ${email}`);
+    // Try MongoDB
+    try {
+      await LinkedInSession.updateOne(
+        { email: email.toLowerCase() },
+        { isValid: false }
+      ).maxTimeMS(5000);
+      console.log(`✅ Session invalidated in MongoDB for: ${email}`);
+    } catch (mongoError) {
+      // Try file
+      const filePath = path.join(COOKIES_DIR, `${email}.json`);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`✅ Session file deleted for: ${email}`);
+      }
+    }
+    
     return true;
   } catch (error) {
     console.error('❌ Error invalidating session:', error);
@@ -79,16 +142,25 @@ export async function invalidateSession(email) {
  */
 export async function hasValidSession(email) {
   try {
-    const session = await LinkedInSession.findOne({ 
-      email: email.toLowerCase(),
-      isValid: true
-    });
+    // Try MongoDB
+    try {
+      const session = await LinkedInSession.findOne({ 
+        email: email.toLowerCase(),
+        isValid: true
+      }).maxTimeMS(5000);
 
-    if (!session || session.isExpired()) {
-      return false;
+      return session && !session.isExpired();
+    } catch (mongoError) {
+      // Try file
+      const filePath = path.join(COOKIES_DIR, `${email}.json`);
+      if (fs.existsSync(filePath)) {
+        const sessionData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        const expiresAt = new Date(sessionData.expiresAt);
+        return new Date() <= expiresAt && sessionData.isValid;
+      }
     }
 
-    return true;
+    return false;
   } catch (error) {
     return false;
   }
