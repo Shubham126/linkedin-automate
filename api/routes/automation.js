@@ -304,4 +304,146 @@ router.post('/job/cancel', (req, res) => {
     });
   }
 });
+
+// ===== CREATE POST ROUTES =====
+
+// Create Single Post (AI Generated)
+router.post('/create-post/single', async (req, res) => {
+  try {
+    const { 
+      linkedinUsername, 
+      linkedinPassword, 
+      postText,
+      hashtags = []
+    } = req.body;
+
+    if (!linkedinUsername) {
+      return res.status(400).json({
+        success: false,
+        error: 'LinkedIn username is required'
+      });
+    }
+
+    if (!postText || postText.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Post text is required'
+      });
+    }
+
+    const hasSession = await hasValidSession(linkedinUsername);
+
+    if (!hasSession && !linkedinPassword) {
+      return res.status(401).json({
+        success: false,
+        error: 'No valid session found. Please login first or provide password.'
+      });
+    }
+
+    const result = await jobManager.startJob('createPostSingle.js', {
+      LINKEDIN_USERNAME: linkedinUsername,
+      LINKEDIN_PASSWORD: linkedinPassword || '',
+      USE_SAVED_COOKIES: hasSession ? 'true' : 'false',
+      POST_TEXT: postText,
+      POST_HASHTAGS: JSON.stringify(hashtags)
+    });
+
+    res.json({
+      success: true,
+      usingCookies: hasSession,
+      ...result
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Generate AI Post
+router.post('/create-post/generate-ai', async (req, res) => {
+  try {
+    const { 
+      topic, 
+      tone = 'professional', 
+      length = 'medium', 
+      includeQuestion = true
+    } = req.body;
+
+    if (!topic || topic.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Topic is required'
+      });
+    }
+
+    const mockPost = `Thoughts on ${topic}:\n\nIn today's fast-paced world, ${topic.toLowerCase()} has become increasingly important. Here are some key insights:\n\n✓ Innovation and growth\n✓ Best practices and strategies\n✓ Future opportunities and challenges\n\n${includeQuestion ? 'What are your thoughts on this? I\'d love to hear your perspective!' : ''}`;
+    
+    const mockHashtags = ['LinkedIn', 'Business', 'Professional', 'Growth', 'Innovation'];
+
+    res.json({
+      success: true,
+      data: {
+        text: mockPost,
+        hashtags: mockHashtags,
+        tone,
+        length
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Generate Hashtags
+router.post('/create-post/generate-hashtags', async (req, res) => {
+  try {
+    const { postText, count = 5 } = req.body;
+
+    if (!postText || postText.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Post text is required'
+      });
+    }
+
+    const words = postText
+      .split(/\s+/)
+      .filter(word => word.length > 4 && !word.includes('#'))
+      .slice(0, 3);
+
+    const customHashtags = words.map(word => 
+      '#' + word.toLowerCase().replace(/[^a-z0-9]/g, '')
+    );
+
+    const genericHashtags = [
+      '#LinkedIn',
+      '#Professional',
+      '#Success',
+      '#Business',
+      '#Growth',
+      '#Innovation',
+      '#Insights',
+      '#Career'
+    ];
+
+    const finalHashtags = [
+      ...new Set([...customHashtags, ...genericHashtags])
+    ].slice(0, count);
+
+    res.json({
+      success: true,
+      data: finalHashtags
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 export default router;

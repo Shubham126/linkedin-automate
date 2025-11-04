@@ -1,19 +1,109 @@
+// ==================== FILE: create-ai-posts.js ====================
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import dotenv from "dotenv";
+import connectDB from './config/database.js'; 
 import { linkedInLogin } from './actions/login.js';
-import { generateLinkedInPost, generateHashtags, generatePostIdeas } from './services/aiService.js';
+import { generateLinkedInPost, generateHashtags } from './services/aiService.js';
 import { sleep, randomDelay, humanLikeType } from './utils/helpers.js';
+import { getCookies, saveCookies } from './services/cookieService.js';
+import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
+import { logActivity } from './utils/activityLogger.js';
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
 
+// ==================== INITIALIZE MONGODB ====================
+let mongoConnected = false;
+
+async function initializeMongoDB() {
+  try {
+    console.log('🔗 Connecting to MongoDB...');
+    const result = await connectDB();
+    
+    if (result) {
+      mongoConnected = true;
+      console.log('✅ MongoDB connected successfully!');
+    } else {
+      console.log('⚠️ MongoDB connection returned false');
+      mongoConnected = false;
+    }
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error.message);
+    mongoConnected = false;
+  }
+}
+
+// Initialize MongoDB first
+await initializeMongoDB();
+
+if (!mongoConnected) {
+  console.error('❌ Cannot start bot without MongoDB connection');
+  process.exit(1);
+}
+
+/**
+ * Human-like mouse movement and click
+ */
+async function humanLikeClick(page, element, options = {}) {
+  const {
+    minDelay = 300,
+    maxDelay = 800,
+    moveSteps = 10,
+    jitter = true
+  } = options;
+
+  try {
+    const boundingBox = await element.boundingBox();
+    if (!boundingBox) {
+      console.log('   ⚠️ Element not visible, trying direct click');
+      await element.click();
+      return true;
+    }
+
+    let targetX = boundingBox.x + boundingBox.width / 2;
+    let targetY = boundingBox.y + boundingBox.height / 2;
+
+    if (jitter) {
+      targetX += (Math.random() - 0.5) * 10;
+      targetY += (Math.random() - 0.5) * 10;
+    }
+
+    const currentPos = { x: 960, y: 540 };
+
+    const steps = moveSteps;
+    for (let i = 0; i < steps; i++) {
+      const progress = i / steps;
+      const easeProgress = 1 - Math.pow(1 - progress, 3);
+      
+      const x = currentPos.x + (targetX - currentPos.x) * easeProgress;
+      const y = currentPos.y + (targetY - currentPos.y) * easeProgress;
+
+      await page.mouse.move(x, y);
+      await sleep(randomDelay(10, 30));
+    }
+
+    await page.mouse.move(targetX, targetY);
+    await sleep(randomDelay(minDelay, maxDelay));
+    await page.mouse.click(targetX, targetY);
+    await sleep(randomDelay(200, 400));
+
+    return true;
+
+  } catch (error) {
+    console.log(`   ⚠️ Human-like click failed: ${error.message}, trying direct click`);
+    try {
+      await element.click();
+      return true;
+    } catch (e) {
+      console.log('   ❌ Direct click also failed');
+      return false;
+    }
+  }
+}
+
 /**
  * Create a LinkedIn post
- * @param {Object} page - Puppeteer page
- * @param {string} postText - Text content of the post
- * @param {Object} options - Additional options (hashtags, image, etc.)
- * @returns {Promise<boolean>} Success status
  */
 async function createLinkedInPost(page, postText, options = {}) {
   try {
@@ -23,7 +113,7 @@ async function createLinkedInPost(page, postText, options = {}) {
     const currentUrl = page.url();
     if (!currentUrl.includes('/feed/')) {
       console.log('🏠 Navigating to LinkedIn feed...');
-      await page.goto('https://www.linkedin.com/feed/', {
+      await page.goto('https://www.linkedin.com/feed/?locale=en_US', {
         waitUntil: 'networkidle2',
         timeout: 60000
       });
@@ -36,11 +126,12 @@ async function createLinkedInPost(page, postText, options = {}) {
     let startPostButton = await page.$('button[aria-label*="Start a post"]');
     
     if (!startPostButton) {
-      // Try alternative selectors
       const buttons = await page.$$('button');
       for (const button of buttons) {
         const text = await button.evaluate(el => el.textContent.trim());
-        if (text.includes('Start a post')) {
+        const ariaLabel = await button.evaluate(el => el.getAttribute('aria-label')) || '';
+        
+        if (text.includes('Start a post') || ariaLabel.includes('Start a post')) {
           startPostButton = button;
           break;
         }
@@ -51,18 +142,46 @@ async function createLinkedInPost(page, postText, options = {}) {
       console.log('❌ Could not find "Start a post" button');
       return false;
     }
-    
-    await startPostButton.click();
-    console.log('✅ Clicked "Start a post" button');
+
+    console.log('✅ Found "Start a post" button');
+
+    await startPostButton.evaluate(el => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    await sleep(randomDelay(500, 1000));
+
+    console.log('👆 Clicking with human-like movement...');
+    const clicked = await humanLikeClick(page, startPostButton, {
+      minDelay: 300,
+      maxDelay: 800,
+      moveSteps: 15,
+      jitter: true
+    });
+
+    if (!clicked) {
+      console.log('⚠️ Click failed');
+      return false;
+    }
+
+    console.log('✅ Button clicked successfully');
     await sleep(randomDelay(2000, 3000));
     
-    // Wait for post editor to appear
+    // Wait for post editor
     console.log('⏳ Waiting for post editor...');
-    await page.waitForSelector('div.ql-editor[contenteditable="true"]', { timeout: 10000 });
+    try {
+      await page.waitForSelector('div.ql-editor[contenteditable="true"]', { timeout: 10000 });
+    } catch (e) {
+      console.log('⚠️ Editor timeout, trying alternative selector...');
+      await page.waitForSelector('[contenteditable="true"]', { timeout: 10000 });
+    }
+
     await sleep(1000);
     
-    // Find the editor
-    const editor = await page.$('div.ql-editor[contenteditable="true"]');
+    let editor = await page.$('div.ql-editor[contenteditable="true"]');
+    
+    if (!editor) {
+      editor = await page.$('[contenteditable="true"]');
+    }
     
     if (!editor) {
       console.log('❌ Post editor not found');
@@ -104,18 +223,19 @@ async function createLinkedInPost(page, postText, options = {}) {
     // Find and click Post button
     console.log('🔍 Looking for Post button...');
     
-    let postButton = null;
+    let postButton = await page.$('button[aria-label="Post"]');
     
-    // Try multiple selectors
-    const postButtons = await page.$$('button');
-    for (const button of postButtons) {
-      const buttonText = await button.evaluate(el => el.textContent.trim());
-      const ariaLabel = await button.evaluate(el => el.getAttribute('aria-label'));
-      
-      if (buttonText === 'Post' || ariaLabel === 'Post') {
-        postButton = button;
-        console.log('✅ Found Post button');
-        break;
+    if (!postButton) {
+      const buttons = await page.$$('button');
+      for (const button of buttons) {
+        const text = await button.evaluate(el => el.textContent.trim());
+        const ariaLabel = await button.evaluate(el => el.getAttribute('aria-label')) || '';
+        
+        if ((text === 'Post' || ariaLabel === 'Post') && !ariaLabel.includes('Dismiss')) {
+          postButton = button;
+          console.log('✅ Found Post button');
+          break;
+        }
       }
     }
     
@@ -131,13 +251,28 @@ async function createLinkedInPost(page, postText, options = {}) {
       console.log('⚠️ Post button is disabled (content may be empty)');
       return false;
     }
+
+    await postButton.evaluate(el => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    await sleep(randomDelay(500, 1000));
     
     // Final pause before posting
     console.log('👀 About to publish post...');
     await sleep(randomDelay(1000, 2000));
     
-    console.log('🚀 Publishing post...');
-    await postButton.click();
+    console.log('🚀 Publishing post with human-like click...');
+    const postClicked = await humanLikeClick(page, postButton, {
+      minDelay: 400,
+      maxDelay: 900,
+      moveSteps: 12,
+      jitter: true
+    });
+
+    if (!postClicked) {
+      console.log('⚠️ Post button click failed');
+      return false;
+    }
     
     console.log('✅ Post published successfully!');
     await sleep(randomDelay(3000, 5000));
@@ -146,81 +281,37 @@ async function createLinkedInPost(page, postText, options = {}) {
     
   } catch (error) {
     console.error('❌ Error creating post:', error.message);
-    console.error('Stack:', error.stack);
     return false;
   }
 }
 
-/**
- * Schedule multiple posts
- * @param {Object} page - Puppeteer page
- * @param {Array} posts - Array of post objects {text, hashtags}
- * @param {number} delayBetweenPosts - Delay in ms between posts
- */
-async function scheduleMultiplePosts(page, posts, delayBetweenPosts = 600000) {
-  console.log(`\n📅 Scheduling ${posts.length} posts`);
-  console.log(`⏱️ Delay between posts: ${Math.round(delayBetweenPosts/60000)} minutes`);
-  
-  let successCount = 0;
-  let failCount = 0;
-  
-  for (let i = 0; i < posts.length; i++) {
-    const post = posts[i];
-    
-    console.log('\n' + '═'.repeat(60));
-    console.log(`📝 Creating Post ${i + 1}/${posts.length}`);
-    console.log('═'.repeat(60));
-    
-    const success = await createLinkedInPost(page, post.text, {
-      hashtags: post.hashtags || []
-    });
-    
-    if (success) {
-      successCount++;
-      console.log(`✅ Post ${i + 1} published successfully!`);
-    } else {
-      failCount++;
-      console.log(`❌ Post ${i + 1} failed to publish`);
-    }
-    
-    // Wait before next post (if not last post)
-    if (i < posts.length - 1) {
-      const waitMinutes = Math.round(delayBetweenPosts / 60000);
-      console.log(`\n⏳ Waiting ${waitMinutes} minutes before next post...`);
-      await sleep(delayBetweenPosts);
-    }
-  }
-  
-  console.log('\n' + '═'.repeat(60));
-  console.log('📊 Post Creation Summary');
-  console.log('═'.repeat(60));
-  console.log(`✅ Successful: ${successCount}/${posts.length}`);
-  console.log(`❌ Failed: ${failCount}/${posts.length}`);
-  console.log('═'.repeat(60));
-}
-
 async function automatedAIPostCreation() {
-  console.log('\n🎯 LinkedIn AI-Powered Post Creator');
-  console.log('🤖 Generates posts using AI');
-  console.log('⚠️  Educational purposes only');
-  console.log('═'.repeat(60) + '\n');
+  const proxyArgs = getProxyArgs();
 
   const browser = await puppeteer.launch({
     headless: false,
     defaultViewport: null,
     args: [
-      "--start-maximized",
-      "--no-sandbox",
+      "--start-maximized", 
+      "--no-sandbox", 
       "--disable-setuid-sandbox",
       "--disable-blink-features=AutomationControlled",
-      "--lang=en-US"
+      "--lang=en-US",
+      "--accept-lang=en-US,en;q=0.9",
+      ...proxyArgs
     ],
   });
 
   try {
     const page = (await browser.pages())[0];
-    page.setDefaultNavigationTimeout(60000);
+    page.setDefaultNavigationTimeout(90000);
 
+    await authenticateProxy(page);
+    if (proxyArgs.length > 0) {
+      await testProxyConnection(page);
+    }
+
+    // Set English user agent and language headers
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9'
     });
@@ -229,21 +320,128 @@ async function automatedAIPostCreation() {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    // Login
-    console.log('🔐 Logging in...');
-    const loggedIn = await linkedInLogin(page);
-    if (!loggedIn) {
-      console.log('❌ Login failed');
+    // Override navigator.language and languages
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'language', {
+        get: function() { return 'en-US'; }
+      });
+      Object.defineProperty(navigator, 'languages', {
+        get: function() { return ['en-US', 'en']; }
+      });
+    });
+
+    console.log('\n' + '═'.repeat(70));
+    console.log('🎯 LinkedIn AI-Powered Post Creator');
+    console.log('═'.repeat(70));
+    console.log('🤖 Generates posts using AI');
+    console.log('📊 Saves ALL data to MongoDB');
+    console.log('📥 Export as CSV from dashboard');
+    console.log('🍪 Session management - skips login after first time');
+    console.log('⚠️  Educational purposes only');
+    console.log('═'.repeat(70) + '\n');
+
+    const username = process.env.LINKEDIN_USERNAME;
+    const password = process.env.LINKEDIN_PASSWORD;
+    const useSavedCookies = process.env.USE_SAVED_COOKIES !== 'false';
+
+    if (!username) {
+      console.error('❌ LINKEDIN_USERNAME not set in .env');
       await browser.close();
       return;
     }
 
-    console.log('✅ Logged in!\n');
+    console.log(`👤 Account: ${username}`);
 
-    // ===== OPTION 1: Generate Single AI Post =====
-    console.log('═'.repeat(60));
+    let loggedIn = false;
+
+    // Try to use saved cookies first
+    if (useSavedCookies && username) {
+      console.log('\n🍪 Checking for saved session...');
+      const savedCookies = await getCookies(username);
+      
+      if (savedCookies && savedCookies.length > 0) {
+        console.log(`✅ Found ${savedCookies.length} saved cookies`);
+        console.log('🔄 Attempting to restore session...');
+        
+        try {
+          await page.setCookie(...savedCookies);
+          
+          console.log('⏳ Navigating to LinkedIn...');
+          await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
+            waitUntil: 'domcontentloaded',
+            timeout: 120000
+          });
+
+          await sleep(5000);
+
+          const currentUrl = page.url();
+          console.log(`📍 Current URL: ${currentUrl}`);
+
+          if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork') || currentUrl.includes('/in/')) {
+            console.log('✅ Session restored successfully! Skipping login.\n');
+            loggedIn = true;
+          } else if (currentUrl.includes('/login') || currentUrl.includes('/checkpoint')) {
+            console.log('⚠️ Cookies expired or invalid, need fresh login');
+            loggedIn = false;
+          }
+        } catch (error) {
+          console.log(`⚠️ Error restoring session: ${error.message}`);
+          loggedIn = false;
+        }
+      }
+    }
+
+    // Login if cookies didn't work
+    if (!loggedIn) {
+      if (!password) {
+        console.error('❌ Password required for fresh login');
+        await browser.close();
+        return;
+      }
+
+      console.log('\n🔐 Starting fresh login...');
+      loggedIn = await linkedInLogin(page, username, password, true);
+      
+      if (!loggedIn) {
+        console.log('❌ Login failed. Exiting...');
+        await browser.close();
+        return;
+      }
+
+      console.log('✅ Login successful!');
+      
+      // Save cookies after successful login
+      console.log('💾 Saving session cookies...');
+      const cookies = await page.cookies();
+      await saveCookies(username, cookies);
+      console.log(`✅ Saved ${cookies.length} cookies for future use\n`);
+    }
+
+    // Ensure we're on the feed
+    console.log('🏠 Navigating to LinkedIn feed...');
+    try {
+      const currentUrl = page.url();
+      if (!currentUrl.includes('/feed')) {
+        await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
+          waitUntil: 'networkidle2', 
+          timeout: 60000 
+        });
+      }
+    } catch (error) {
+      if (error.message.includes('timeout')) {
+        console.log('⚠️ Navigation timeout, continuing...');
+      } else {
+        throw error;
+      }
+    }
+    
+    console.log('✅ Feed loaded successfully!');
+    await sleep(5000);
+
+    // Generate and post
+    console.log('═'.repeat(70));
     console.log('🤖 AI Post Generation Mode');
-    console.log('═'.repeat(60));
+    console.log('═'.repeat(70));
 
     const topic = "the future of remote work and hybrid teams";
     
@@ -257,9 +455,9 @@ async function automatedAIPostCreation() {
     });
 
     console.log('\n✅ AI Generated Post:');
-    console.log('─'.repeat(60));
+    console.log('─'.repeat(70));
     console.log(aiPostText);
-    console.log('─'.repeat(60));
+    console.log('─'.repeat(70));
 
     // Generate hashtags
     const hashtags = await generateHashtags(aiPostText, 5);
@@ -273,61 +471,51 @@ async function automatedAIPostCreation() {
 
     if (success) {
       console.log('\n🎉 AI post published successfully!');
+      
+      // ✅ LOG TO MONGODB
+      try {
+        await logActivity({
+          action: 'post_created',
+          postUrl: `linkedin.com/feed/${Date.now()}`,
+          authorName: username,
+          postPreview: aiPostText.substring(0, 100),
+          commentText: aiPostText,
+          postType: 'ai_generated',
+          isJobPost: false
+        });
+        
+        console.log('✅ Post logged to MongoDB!');
+      } catch (err) {
+        console.log('⚠️ MongoDB logging failed');
+      }
+
+      console.log('\n' + '═'.repeat(70));
+      console.log('📊 Post Statistics:`);
+      console.log(`   • Content: AI-Generated`);
+      console.log(`   • Length: ${aiPostText.length} characters`);
+      console.log(`   • Hashtags: ${hashtags.length}`);
+      console.log(`\n📥 Download Data:`);
+      console.log(`   • API: GET http://localhost:3000/api/logs/user/${username}`);
+      console.log(`   • CSV: GET http://localhost:3000/api/logs/download/${username}`);
+      console.log('═'.repeat(70) + '\n');
+    } else {
+      console.log('\n❌ Failed to publish post');
     }
 
-    // ===== OPTION 2: Generate Post Ideas First =====
-    /*
-    console.log('\n💡 Generating post ideas...');
-    const ideas = await generatePostIdeas("artificial intelligence in business", 3);
-    console.log('\n' + ideas);
+    console.log('\n⏳ Browser will remain open for 15 seconds...');
+    await sleep(15000);
+
+    console.log('👋 Closing browser...');
+    await browser.close();
     
-    // Then pick one and generate full post
-    const selectedTopic = "how AI is transforming customer service";
-    const post = await generateLinkedInPost(selectedTopic);
-    const tags = await generateHashtags(post);
-    
-    await createLinkedInPost(page, post, { hashtags: tags });
-    */
-
-    // ===== OPTION 3: Multiple AI Posts on Different Topics =====
-    /*
-    const topics = [
-      "career growth tips for software developers",
-      "the importance of continuous learning in tech",
-      "building a personal brand on LinkedIn"
-    ];
-
-    const aiPosts = [];
-    
-    for (const topic of topics) {
-      console.log(`\n🤖 Generating post about: "${topic}"`);
-      const postText = await generateLinkedInPost(topic, {
-        tone: 'inspirational',
-        length: 'short',
-        includeQuestion: true
-      });
-      
-      const hashtags = await generateHashtags(postText, 4);
-      
-      aiPosts.push({
-        text: postText,
-        hashtags: hashtags.map(tag => tag.replace('#', ''))
-      });
-      
-      await sleep(2000); // Delay between API calls
-    }
-
-    // Schedule them with 15-minute intervals
-    await scheduleMultiplePosts(page, aiPosts, 900000);
-    */
-
-    console.log('\n⏳ Browser open for 10 seconds...');
-    await sleep(10000);
-
   } catch (err) {
-    console.error('\n❌ ERROR:', err.message);
-    console.error(err.stack);
+    console.error('\n❌ CRITICAL ERROR:');
+    console.error('═'.repeat(70));
+    console.error('Error message:', err.message);
+    console.error('═'.repeat(70));
+    await browser.close();
   }
 }
 
+console.log('\n🎯 LinkedIn AI-Powered Post Creator\n');
 automatedAIPostCreation();

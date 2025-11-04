@@ -1,59 +1,83 @@
+// ==================== FILE: scrape-profiles.js ====================
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import dotenv from 'dotenv';
+import connectDB from './config/database.js';
 import { linkedInLogin } from './actions/login.js';
-import { saveProfileToSheet } from './services/googlePeopleSheetService.js';
 import { sleep, randomDelay } from './utils/helpers.js';
 import { getCookies, saveCookies } from './services/cookieService.js';
 import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
+import { logActivity } from './utils/activityLogger.js';
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
 
+// ==================== INITIALIZE MONGODB ====================
+let mongoConnected = false;
+
+async function initializeMongoDB() {
+  try {
+    console.log('🔗 Connecting to MongoDB...');
+    const result = await connectDB();
+    
+    if (result) {
+      mongoConnected = true;
+      console.log('✅ MongoDB connected successfully!');
+    } else {
+      console.log('⚠️ MongoDB connection returned false');
+      mongoConnected = false;
+    }
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error.message);
+    mongoConnected = false;
+  }
+}
+
+// Initialize MongoDB first
+await initializeMongoDB();
+
+if (!mongoConnected) {
+  console.error('❌ Cannot start bot without MongoDB connection');
+  process.exit(1);
+}
+
 /**
- * Extract profile data from search results - FIXED to prevent stale elements
+ * Extract profile data from search results
  */
 async function extractSearchProfileData(personCard) {
   try {
-    // Extract all data immediately before elements become stale
     const profileData = await personCard.evaluate((card) => {
       try {
-        // Extract profile URL
         let profileUrl = '';
         const profileLink = card.querySelector('a[href*="/in/"]');
         if (profileLink) {
           profileUrl = profileLink.href.split('?')[0];
         }
 
-        // Extract name
         let name = '';
         const nameElement = card.querySelector('.nZnZPewNyCgelhNsWTDoAEVaxjUNeRjX span[aria-hidden="true"]');
         if (nameElement) {
           name = nameElement.textContent.trim();
         }
 
-        // Extract connection degree
         let connectionDegree = '';
         const degreeElement = card.querySelector('.entity-result__badge-text span[aria-hidden="true"]');
         if (degreeElement) {
           connectionDegree = degreeElement.textContent.trim();
         }
 
-        // Extract headline
         let headline = '';
         const headlineElement = card.querySelector('.IFwteLsnVaXDnppgYAFeYlxNsWmLbhSBIbAw');
         if (headlineElement) {
           headline = headlineElement.textContent.trim();
         }
 
-        // Extract location
         let location = '';
         const locationElement = card.querySelector('.vROFeONyrzIYGuqcPKvKUOsZCObhJLhxV');
         if (locationElement) {
           location = locationElement.textContent.trim();
         }
 
-        // Extract followers
         let followers = '';
         const followersElement = card.querySelector('.reusable-search-simple-insight__text--small');
         if (followersElement) {
@@ -123,7 +147,7 @@ async function extractProfileAbout(page, profileUrl) {
       // Ignore if button not found
     }
 
-    // Extract About section using page.evaluate to avoid stale references
+    // Extract About section
     const about = await page.evaluate(() => {
       const selectors = [
         'section[data-section="summary"] .inline-show-more-text span[aria-hidden="true"]',
@@ -216,6 +240,7 @@ async function scrapeLinkedInPeopleProfiles() {
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
       '--lang=en-US',
+      '--accept-lang=en-US,en;q=0.9',
       ...proxyArgs
     ]
   });
@@ -229,13 +254,24 @@ async function scrapeLinkedInPeopleProfiles() {
       await testProxyConnection(page);
     }
 
-    console.log('\n🎯 LinkedIn People Profile Scraper');
-    console.log('🔍 Searches for people and extracts profile data');
-    console.log('📊 Saves to Google Sheets');
-    console.log('📄 Supports pagination across multiple pages');
-    console.log('═'.repeat(60) + '\n');
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9'
+    });
 
-    // Get credentials from environment (passed by job manager from API)
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+
+    console.log('\n' + '═'.repeat(70));
+    console.log('🎯 LinkedIn People Profile Scraper');
+    console.log('═'.repeat(70));
+    console.log('🔍 Searches for people and extracts profile data');
+    console.log('📊 Saves ALL data to MongoDB');
+    console.log('📥 Export as CSV from dashboard');
+    console.log('📄 Supports pagination across multiple pages');
+    console.log('⚠️  Educational purposes only');
+    console.log('═'.repeat(70) + '\n');
+
     const username = process.env.LINKEDIN_USERNAME;
     const password = process.env.LINKEDIN_PASSWORD;
     const useSavedCookies = process.env.USE_SAVED_COOKIES !== 'false';
@@ -246,7 +282,7 @@ async function scrapeLinkedInPeopleProfiles() {
       return;
     }
 
-    console.log(`👤 Scraping with account: ${username}`);
+    console.log(`👤 Account: ${username}`);
 
     let loggedIn = false;
 
@@ -256,7 +292,7 @@ async function scrapeLinkedInPeopleProfiles() {
       const savedCookies = await getCookies(username);
       
       if (savedCookies && savedCookies.length > 0) {
-        console.log('✅ Found saved cookies, attempting to restore session...');
+        console.log(`✅ Found ${savedCookies.length} saved cookies`);
         
         try {
           await page.setCookie(...savedCookies);
@@ -293,25 +329,16 @@ async function scrapeLinkedInPeopleProfiles() {
         return;
       }
 
-      // Save cookies after successful login
       const cookies = await page.cookies();
       await saveCookies(username, cookies);
+      console.log(`✅ Saved ${cookies.length} cookies\n`);
     }
 
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9'
-    });
-
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    // Get search parameters
-    const searchKeyword = process.env.SEARCH_KEYWORD || 'vibe coding';
+    const searchKeyword = process.env.SEARCH_KEYWORD || 'developer';
     const maxProfiles = parseInt(process.env.MAX_PROFILES_TO_SCRAPE) || 20;
 
-    console.log(`\n🔍 Searching for: "${searchKeyword}"`);
-    console.log(`🎯 Target: ${maxProfiles} profiles`);
+    console.log(`🔍 Searching for: "${searchKeyword}"`);
+    console.log(`🎯 Target: ${maxProfiles} profiles\n`);
 
     const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(searchKeyword)}`;
     
@@ -341,7 +368,7 @@ async function scrapeLinkedInPeopleProfiles() {
     await sleep(searchLoadWait);
 
     console.log('✅ Search results ready!\n');
-    console.log('═'.repeat(60));
+    console.log('═'.repeat(70));
 
     let profilesScraped = 0;
     let currentPage = 1;
@@ -349,7 +376,7 @@ async function scrapeLinkedInPeopleProfiles() {
 
     while (profilesScraped < maxProfiles && hasMorePages) {
       console.log(`\n📄 Processing Page ${currentPage}`);
-      console.log('─'.repeat(60));
+      console.log('─'.repeat(70));
 
       console.log('📜 Scrolling to load all profiles...');
       for (let scroll = 0; scroll < 3; scroll++) {
@@ -357,7 +384,6 @@ async function scrapeLinkedInPeopleProfiles() {
         await sleep(randomDelay(2000, 3000));
       }
 
-      // IMPORTANT: Re-query cards EACH TIME through the loop to avoid stale elements
       let personCards = await page.$$('li.qTpSkRrerBcUqHivKtVbqVGnMhgMkDU');
       
       if (personCards.length === 0) {
@@ -377,14 +403,12 @@ async function scrapeLinkedInPeopleProfiles() {
         break;
       }
 
-      // Process cards one at a time, re-querying after each profile visit
       let processedOnThisPage = 0;
       
       while (processedOnThisPage < personCards.length && profilesScraped < maxProfiles) {
         console.log(`👤 Profile ${profilesScraped + 1}/${maxProfiles} (Page ${currentPage}, Card ${processedOnThisPage + 1}/${personCards.length})`);
-        console.log('─'.repeat(60));
+        console.log('─'.repeat(70));
 
-        // RE-QUERY the card at this index (fresh reference)
         let currentCards = await page.$$('li.qTpSkRrerBcUqHivKtVbqVGnMhgMkDU');
         if (currentCards.length === 0) {
           currentCards = await page.$$('li.reusable-search__result-container');
@@ -393,7 +417,6 @@ async function scrapeLinkedInPeopleProfiles() {
           currentCards = await page.$$('div.fWXGuvpsxPqnAsjzXFvFtNbFaXDLZzKnEc');
         }
 
-        // Get the card at the current position
         if (processedOnThisPage >= currentCards.length) {
           console.log('⚠️ No more cards available at this position');
           break;
@@ -401,7 +424,6 @@ async function scrapeLinkedInPeopleProfiles() {
 
         const card = currentCards[processedOnThisPage];
 
-        // Scroll into view with error handling
         try {
           await card.evaluate(el => {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -409,10 +431,8 @@ async function scrapeLinkedInPeopleProfiles() {
           await sleep(randomDelay(1500, 2500));
         } catch (scrollError) {
           console.log('⚠️ Could not scroll to element, trying to continue...');
-          // Continue anyway - element might still be visible
         }
 
-        // Extract profile data
         let profileData;
         try {
           profileData = await extractSearchProfileData(card);
@@ -441,23 +461,30 @@ async function scrapeLinkedInPeopleProfiles() {
         const about = await extractProfileAbout(page, profileData.profileUrl);
         profileData.about = about;
 
-        // Save to sheet
-        const saved = await saveProfileToSheet(profileData);
-        
-        if (saved) {
+        // ✅ SAVE TO MONGODB
+        try {
+          await logActivity({
+            action: 'profile_viewed',
+            postUrl: profileData.profileUrl,
+            authorName: profileData.name,
+            postPreview: profileData.headline,
+            commentText: about.substring(0, 200),
+            postType: 'profile',
+            isJobPost: false
+          });
+          
           profilesScraped++;
-          console.log(`   ✅ Saved! (Total: ${profilesScraped}/${maxProfiles})`);
+          console.log(`   ✅ Saved to MongoDB! (Total: ${profilesScraped}/${maxProfiles})`);
+        } catch (err) {
+          console.log('   ⚠️ MongoDB save failed');
         }
 
-        // Increment BEFORE going back
         processedOnThisPage++;
 
-        // Pause before going back
         const preBackWait = randomDelay(2000, 4000);
         console.log(`   ⏳ Pausing before going back (${Math.round(preBackWait/1000)}s)...`);
         await sleep(preBackWait);
 
-        // Go back to search results
         console.log('   🔙 Returning to search results...');
         try {
           await page.goBack({ waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -465,12 +492,10 @@ async function scrapeLinkedInPeopleProfiles() {
           console.log('   ⚠️ Back navigation slow, continuing...');
         }
         
-        // Pause after returning
         const postBackWait = randomDelay(4000, 7000);
         console.log(`   ⏳ Stabilizing after return (${Math.round(postBackWait/1000)}s)...`);
         await sleep(postBackWait);
 
-        // Scroll to maintain position
         await page.evaluate((index) => {
           const cards = document.querySelectorAll('li.qTpSkRrerBcUqHivKtVbqVGnMhgMkDU, li.reusable-search__result-container');
           if (cards[index]) {
@@ -480,7 +505,6 @@ async function scrapeLinkedInPeopleProfiles() {
         await sleep(1000);
       }
 
-      // After processing all cards on this page, go to next page
       if (profilesScraped < maxProfiles) {
         console.log('\n📄 Checking for next page...');
         hasMorePages = await goToNextPage(page);
@@ -492,15 +516,21 @@ async function scrapeLinkedInPeopleProfiles() {
       }
     }
 
-    console.log('\n' + '═'.repeat(60));
+    console.log('\n' + '═'.repeat(70));
     console.log('✅ SCRAPING COMPLETED!');
-    console.log('═'.repeat(60));
+    console.log('═'.repeat(70));
     console.log(`\n📊 Statistics:`);
     console.log(`   • Profiles Scraped: ${profilesScraped}`);
     console.log(`   • Pages Processed: ${currentPage}`);
     console.log(`   • Search Keyword: "${searchKeyword}"`);
-    console.log(`\n🔗 View Sheet: https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_PEOPLE_SHEET_ID}`);
-    console.log('═'.repeat(60));
+    console.log(`\n📊 MongoDB Storage:`);
+    console.log(`   • Database: linkedin-automation`);
+    console.log(`   • Collection: activities`);
+    console.log(`   • Records Saved: ${profilesScraped}`);
+    console.log(`\n📥 Download Data:`);
+    console.log(`   • API: GET http://localhost:3000/api/logs/user/${username}`);
+    console.log(`   • CSV: GET http://localhost:3000/api/logs/download/${username}`);
+    console.log('═'.repeat(70) + '\n');
 
     await sleep(10000);
     await browser.close();

@@ -1,14 +1,63 @@
+// ==================== FILE: monitor-connections.js ====================
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import dotenv from 'dotenv';
+import connectDB from './config/database.js';
 import { linkedInLogin } from './actions/login.js';
-import { getPendingConnections, updateConnectionStatus } from './services/googleConnectionsSheetService.js';
 import { sleep, randomDelay } from './utils/helpers.js';
 import { getCookies, saveCookies } from './services/cookieService.js';
 import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
+import { logActivity, getUserLogs } from './utils/activityLogger.js';
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
+
+// ==================== INITIALIZE MONGODB ====================
+let mongoConnected = false;
+
+async function initializeMongoDB() {
+  try {
+    console.log('🔗 Connecting to MongoDB...');
+    const result = await connectDB();
+    
+    if (result) {
+      mongoConnected = true;
+      console.log('✅ MongoDB connected successfully!');
+    } else {
+      console.log('⚠️ MongoDB connection returned false');
+      mongoConnected = false;
+    }
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error.message);
+    mongoConnected = false;
+  }
+}
+
+// Initialize MongoDB first
+await initializeMongoDB();
+
+if (!mongoConnected) {
+  console.error('❌ Cannot start bot without MongoDB connection');
+  process.exit(1);
+}
+
+/**
+ * Get pending connections from MongoDB
+ */
+async function getPendingConnections() {
+  try {
+    const username = process.env.LINKEDIN_USERNAME;
+    const logs = await getUserLogs(username);
+    
+    // Return pending connections that haven't been checked for acceptance yet
+    return logs
+      .filter(log => log.action === 'connection_requested')
+      .slice(0, 10);
+  } catch (error) {
+    console.error('Error fetching pending connections:', error);
+    return [];
+  }
+}
 
 /**
  * Check if connection was accepted by visiting their profile
@@ -70,6 +119,7 @@ async function monitorConnectionAcceptances() {
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
       '--lang=en-US',
+      '--accept-lang=en-US,en;q=0.9',
       ...proxyArgs
     ]
   });
@@ -83,12 +133,23 @@ async function monitorConnectionAcceptances() {
       await testProxyConnection(page);
     }
 
-    console.log('\n👀 LinkedIn Connection Monitor');
-    console.log('🔍 Checks pending connections for acceptances');
-    console.log('📊 Updates Google Sheets automatically');
-    console.log('═'.repeat(60) + '\n');
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9'
+    });
 
-    // Get credentials from environment (passed by job manager from API)
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+
+    console.log('\n' + '═'.repeat(70));
+    console.log('👀 LinkedIn Connection Monitor');
+    console.log('═'.repeat(70));
+    console.log('🔍 Checks pending connections for acceptances');
+    console.log('📊 Updates MongoDB with results');
+    console.log('📥 Export as CSV from dashboard');
+    console.log('⚠️  Educational purposes only');
+    console.log('═'.repeat(70) + '\n');
+
     const username = process.env.LINKEDIN_USERNAME;
     const password = process.env.LINKEDIN_PASSWORD;
     const useSavedCookies = process.env.USE_SAVED_COOKIES !== 'false';
@@ -99,7 +160,7 @@ async function monitorConnectionAcceptances() {
       return;
     }
 
-    console.log(`👤 Monitoring for: ${username}`);
+    console.log(`👤 Account: ${username}`);
 
     let loggedIn = false;
 
@@ -109,7 +170,7 @@ async function monitorConnectionAcceptances() {
       const savedCookies = await getCookies(username);
       
       if (savedCookies && savedCookies.length > 0) {
-        console.log('✅ Found saved cookies, attempting to restore session...');
+        console.log(`✅ Found ${savedCookies.length} saved cookies`);
         
         try {
           await page.setCookie(...savedCookies);
@@ -146,21 +207,17 @@ async function monitorConnectionAcceptances() {
         return;
       }
 
-      // Save cookies after successful login
       const cookies = await page.cookies();
       await saveCookies(username, cookies);
+      console.log(`✅ Saved ${cookies.length} cookies\n`);
     }
 
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    // Get pending connections from Google Sheets
-    console.log('📊 Fetching pending connections from Google Sheets...');
+    // Get pending connections from MongoDB
+    console.log('📊 Fetching pending connections from MongoDB...');
     const pendingConnections = await getPendingConnections();
 
     console.log(`📋 Found ${pendingConnections.length} pending connections to check\n`);
-    console.log('═'.repeat(60));
+    console.log('═'.repeat(70));
 
     if (pendingConnections.length === 0) {
       console.log('\n✅ No pending connections to monitor');
@@ -175,22 +232,33 @@ async function monitorConnectionAcceptances() {
       const connection = pendingConnections[i];
 
       console.log(`\n👤 Checking ${i + 1}/${pendingConnections.length}`);
-      console.log('─'.repeat(60));
-      console.log(`   Name: ${connection.name}`);
-      console.log(`   URL: ${connection.profileUrl}`);
-      console.log(`   Request Date: ${connection.requestDate}`);
+      console.log('─'.repeat(70));
+      console.log(`   Name: ${connection.authorName}`);
+      console.log(`   URL: ${connection.postUrl}`);
+      console.log(`   Added: ${new Date(connection.timestamp).toLocaleDateString()}`);
 
       // Check status
       console.log('   🔍 Checking connection status...');
-      const status = await checkConnectionStatus(page, connection.profileUrl);
+      const status = await checkConnectionStatus(page, connection.postUrl);
 
       console.log(`   📊 Status: ${status}`);
 
       if (status === 'Accepted') {
         console.log('   🎉 Connection was ACCEPTED!');
         
-        // Update Google Sheets
-        await updateConnectionStatus(connection.profileUrl, 'Accepted', false);
+        // ✅ LOG TO MONGODB
+        try {
+          await logActivity({
+            action: 'connection_accepted',
+            postUrl: connection.postUrl,
+            authorName: connection.authorName,
+            postPreview: `Status changed from pending to accepted`,
+            postType: 'connection_status',
+            isJobPost: false
+          });
+        } catch (err) {
+          console.log('   ⚠️ MongoDB save failed');
+        }
         
         acceptedCount++;
       } else if (status === 'Pending') {
@@ -206,15 +274,21 @@ async function monitorConnectionAcceptances() {
       }
     }
 
-    console.log('\n' + '═'.repeat(60));
+    console.log('\n' + '═'.repeat(70));
     console.log('✅ MONITORING COMPLETED!');
-    console.log('═'.repeat(60));
+    console.log('═'.repeat(70));
     console.log(`\n📊 Results:`);
     console.log(`   • Newly Accepted: ${acceptedCount}`);
     console.log(`   • Still Pending: ${stillPendingCount}`);
     console.log(`   • Total Checked: ${pendingConnections.length}`);
-    console.log(`\n🔗 View Sheet: https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_CONNECTIONS_SHEET_ID}`);
-    console.log('═'.repeat(60));
+    console.log(`\n📊 MongoDB Storage:`);
+    console.log(`   • Database: linkedin-automation`);
+    console.log(`   • Collection: activities`);
+    console.log(`   • Records Updated: ${acceptedCount}`);
+    console.log(`\n📥 Download Data:`);
+    console.log(`   • API: GET http://localhost:3000/api/logs/user/${username}`);
+    console.log(`   • CSV: GET http://localhost:3000/api/logs/download/${username}`);
+    console.log('═'.repeat(70) + '\n');
 
     await sleep(10000);
     await browser.close();
@@ -225,4 +299,5 @@ async function monitorConnectionAcceptances() {
   }
 }
 
+console.log('\n🎯 LinkedIn Connection Monitor Automation\n');
 monitorConnectionAcceptances();
