@@ -1,5 +1,5 @@
 // ==================== FILE: services/mongoConnectionService.js ====================
-import { Activity } from '../models/Activity.js';
+import Activity from '../models/Activity.js';
 
 /**
  * Get user logs with optional action filter

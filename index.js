@@ -1,6 +1,9 @@
+// ==================== FILE: backend/index.js ====================
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import dotenv from "dotenv";
+import path from 'path';
+import { fileURLToPath } from 'url';
 import connectDB from './config/database.js'; 
 import { linkedInLogin } from './actions/login.js';
 import { likePost } from './actions/like.js';
@@ -11,10 +14,13 @@ import { sleep, randomDelay, extractPostUrl, extractAuthorName } from './utils/h
 import { logActivity, getActivityStats, hasInteractedWithPost } from './utils/activityLogger.js';
 import { getCookies, saveCookies } from './services/cookieService.js';
 import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
-
+import csvService from './services/csvService.js'; // NEW
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let mongoConnected = false;
 
@@ -48,15 +54,12 @@ if (!mongoConnected) {
 async function humanLikeScroll(page, direction = 'down') {
   console.log(`🐭 Scrolling ${direction}...`);
   
-  // Move mouse to random position
   const randomX = randomDelay(400, 900);
   const randomY = randomDelay(300, 700);
   await page.mouse.move(randomX, randomY);
   
-  // Random scroll distance
   const scrollDistance = direction === 'down' ? randomDelay(600, 1200) : -randomDelay(600, 1200);
   
-  // Scroll with multiple small increments (more human-like)
   const increment = 100;
   const steps = Math.abs(scrollDistance / increment);
   
@@ -65,7 +68,6 @@ async function humanLikeScroll(page, direction = 'down') {
     await sleep(randomDelay(30, 80));
   }
   
-  // Wait after scroll
   await sleep(randomDelay(1500, 3000));
 }
 
@@ -94,19 +96,16 @@ async function getAllPostElements(page) {
 async function likePostButton(post) {
   try {
     const liked = await post.evaluate(el => {
-      // Find the like button - multiple strategies
       const buttons = el.querySelectorAll('button');
       
       for (const btn of buttons) {
         const ariaLabel = btn.getAttribute('aria-label') || '';
         const innerHTML = btn.innerHTML || '';
         
-        // Check for like button
         if (ariaLabel.toLowerCase().includes('like') || 
             innerHTML.includes('thumbs-up') ||
             ariaLabel.includes('reaction')) {
           
-          // Check if already liked
           if (!ariaLabel.includes('already')) {
             btn.click();
             return true;
@@ -134,7 +133,6 @@ async function likePostButton(post) {
 async function getPostText(post) {
   try {
     return await post.evaluate(el => {
-      // Try different selectors for post content
       const contentSelectors = [
         'span[data-testid="expandable-text-box"]',
         'p[class*="commentary"]',
@@ -149,7 +147,6 @@ async function getPostText(post) {
         }
       }
 
-      // Fallback to all text
       const allText = el.innerText;
       if (allText && allText.length > 50) {
         return allText.substring(0, 1000);
@@ -166,7 +163,6 @@ async function getPostText(post) {
 async function getPostUrl(post) {
   try {
     return await post.evaluate(el => {
-      // Try to extract from data attributes
       const dataView = el.getAttribute('data-view-tracking-scope');
       if (dataView) {
         try {
@@ -179,7 +175,6 @@ async function getPostUrl(post) {
         } catch (e) {}
       }
 
-      // Try to find href
       const link = el.querySelector('a[href*="linkedin.com"]');
       if (link) return link.href;
 
@@ -211,6 +206,21 @@ async function getAuthorName(post) {
     });
   } catch (error) {
     return 'Unknown Author';
+  }
+}
+
+// ==================== CHECK IF JOB POST ====================
+async function isJobPost(post) {
+  try {
+    return await post.evaluate(el => {
+      const text = el.innerText.toLowerCase();
+      return text.includes('job') || 
+             text.includes('hiring') || 
+             text.includes('position') ||
+             text.includes('application');
+    });
+  } catch (error) {
+    return false;
   }
 }
 
@@ -265,6 +275,7 @@ async function linkedInAutomation() {
     console.log('🤖 AI Provider: ' + (process.env.AI_PROVIDER || 'openrouter').toUpperCase());
     console.log('🍪 Session Management: Enabled');
     console.log('🐭 Scrolling: Mouse-based Human-like');
+    console.log('📁 CSV Storage: Enabled'); // NEW
     console.log('='.repeat(60));
 
     const username = process.env.LINKEDIN_USERNAME;
@@ -310,7 +321,7 @@ async function linkedInAutomation() {
     }
 
     // ==================== LOGIN IF NEEDED ====================
-    if (!loggedIn) {
+      if (!loggedIn) {
       if (!password) {
         console.error('❌ Password required for fresh login');
         await browser.close();
@@ -320,14 +331,41 @@ async function linkedInAutomation() {
       console.log('\n🔐 Starting fresh login...');
       loggedIn = await linkedInLogin(page, username, password, true);
       
+      console.log('\n⏸️  Please complete all verification steps:');
+      console.log('   1️⃣  Solve CAPTCHA (if shown)');
+      console.log('   2️⃣  Enter OTP code (if requested)');
+      console.log('   3️⃣  Wait for redirect to LinkedIn feed');
+      console.log('\n⏳ Waiting up to 5 minutes...\n');
+      
+      // Wait for successful navigation to feed (up to 5 minutes)
+      try {
+        await page.waitForFunction(
+          () => window.location.href.includes('/feed') || 
+                window.location.href.includes('/mynetwork'),
+          { timeout: 300000 } // 5 minutes
+        );
+        
+        loggedIn = true;
+        console.log('✅ Login verified successfully!');
+        
+      } catch (error) {
+        console.log('⚠️  Timeout waiting for login completion');
+        const currentUrl = page.url();
+        if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
+          loggedIn = true;
+          console.log('✅ But you are logged in!');
+        } else {
+          loggedIn = false;
+        }
+      }
+      
       if (!loggedIn) {
         console.log('❌ Login failed. Exiting...');
         await browser.close();
         return;
       }
 
-      console.log('✅ Login successful!');
-      
+
       const cookies = await page.cookies();
       await saveCookies(username, cookies);
       console.log(`✅ Saved ${cookies.length} cookies`);
@@ -367,7 +405,6 @@ async function linkedInAutomation() {
 
     while (postsEvaluated < maxPosts) {
       try {
-        // Get posts
         let posts = await getAllPostElements(page);
         
         if (posts.length === 0) {
@@ -379,7 +416,6 @@ async function linkedInAutomation() {
 
         console.log(`📊 Found ${posts.length} posts, processing...`);
 
-        // Process first 2-3 posts, then scroll for more
         const postsToProcess = Math.min(3, posts.length);
         
         for (let i = 0; i < postsToProcess; i++) {
@@ -392,19 +428,18 @@ async function linkedInAutomation() {
           console.log('═'.repeat(60));
 
           try {
-            // Scroll to post
             await post.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
             await sleep(randomDelay(2000, 3500));
 
-            // Extract info
             const postUrl = await getPostUrl(post);
             const authorName = await getAuthorName(post);
             const postText = await getPostText(post);
+            const isJob = await isJobPost(post); // NEW
 
             console.log(`👤 Author: ${authorName}`);
             console.log(`📝 Content: ${postText.substring(0, 100)}...`);
+            if (isJob) console.log('💼 Job Post Detected');
 
-            // Check if already interacted
             const alreadyInteracted = await hasInteractedWithPost(postUrl);
             if (alreadyInteracted) {
               console.log('⏭️ Already interacted, skipping...');
@@ -416,7 +451,6 @@ async function linkedInAutomation() {
               continue;
             }
 
-            // AI Analysis
             console.log('\n🤖 AI analyzing...');
             await sleep(randomDelay(1500, 2500));
             
@@ -426,13 +460,12 @@ async function linkedInAutomation() {
             console.log(`   Like: ${evaluation.likeScore}/10 → ${evaluation.shouldLike ? '✅' : '❌'}`);
             console.log(`   Comment: ${evaluation.commentScore}/10 → ${evaluation.shouldComment ? '✅' : '❌'}`);
 
-            // Read simulation
             await sleep(randomDelay(3000, 6000));
 
             scoreDistribution.likes.push(evaluation.likeScore);
             scoreDistribution.comments.push(evaluation.commentScore);
 
-            // LIKE
+            // ==================== LIKE WITH CSV ====================
             if (evaluation.shouldLike) {
               console.log('\n👍 Liking...');
               await sleep(randomDelay(800, 1500));
@@ -440,18 +473,24 @@ async function linkedInAutomation() {
               const liked = await likePostButton(post);
               if (liked) {
                 likesGiven++;
-                await logActivity({
-                  action: 'like',
-                  postUrl: postUrl,
+                
+                // NEW: Save to CSV
+                await csvService.appendLikeActivity(username, {
+                  timestamp: new Date().toISOString(),
                   authorName: authorName,
-                  likeScore: evaluation.likeScore
+                  postPreview: postText.substring(0, 100),
+                  likeScore: evaluation.likeScore,
+                  isJobPost: isJob,
+                  postUrl: postUrl
                 });
+                
+                console.log('✅ Saved to CSV');
               }
               
               await sleep(randomDelay(1500, 3000));
             }
 
-            // COMMENT
+            // ==================== COMMENT WITH CSV ====================
             if (evaluation.shouldComment) {
               console.log('\n💬 Commenting...');
               await sleep(randomDelay(1500, 2500));
@@ -462,14 +501,20 @@ async function linkedInAutomation() {
               const commented = await commentOnPost(post, page, commentText);
               if (commented) {
                 commentsPosted++;
-                if (evaluation.isJobPost) jobPostsCommented++;
+                if (isJob) jobPostsCommented++;
                 
-                await logActivity({
-                  action: 'comment',
-                  postUrl: postUrl,
+                // NEW: Save to CSV
+                await csvService.appendCommentActivity(username, {
+                  timestamp: new Date().toISOString(),
                   authorName: authorName,
-                  commentText: commentText
+                  postPreview: postText.substring(0, 100),
+                  commentText: commentText,
+                  commentScore: evaluation.commentScore,
+                  isJobPost: isJob,
+                  postUrl: postUrl
                 });
+                
+                console.log('✅ Saved to CSV');
               }
             }
 
@@ -484,7 +529,6 @@ async function linkedInAutomation() {
           }
         }
 
-        // Scroll for more posts
         if (postsEvaluated < maxPosts) {
           console.log('\n⏳ Scrolling for more posts...');
           await humanLikeScroll(page, 'down');
@@ -506,22 +550,35 @@ async function linkedInAutomation() {
       ? (scoreDistribution.comments.reduce((a, b) => a + b, 0) / scoreDistribution.comments.length).toFixed(1)
       : 0;
 
-    const activityStats = await getActivityStats();
+    // NEW: Get stats from CSV
+    const csvStats = await csvService.getUserStats(username);
+    const userCSVPaths = await csvService.getUserCSVPaths(username);
 
     console.log('\n' + '═'.repeat(60));
     console.log('✅ COMPLETED!');
     console.log('═'.repeat(60));
-    console.log('\n📊 Statistics:');
+    console.log('\n📊 Session Statistics:');
     console.log(`   Posts Evaluated: ${postsEvaluated}/${maxPosts}`);
     console.log(`   Avg Like Score: ${avgLikeScore}/10`);
     console.log(`   Avg Comment Score: ${avgCommentScore}/10`);
     console.log(`   Likes Given: ${likesGiven}`);
     console.log(`   Comments Posted: ${commentsPosted}`);
     console.log(`   Job Posts: ${jobPostsCommented}`);
-    console.log('\n📁 All-Time:');
-    console.log(`   Total Activities: ${activityStats.total}`);
-    console.log(`   Total Likes: ${activityStats.likes}`);
-    console.log(`   Total Comments: ${activityStats.comments}`);
+    
+    console.log('\n📁 All-Time Statistics:');
+    console.log(`   Total Likes: ${csvStats.total_engagement_likes || 0}`);
+    console.log(`   Total Comments: ${csvStats.total_engagement_comments || 0}`);
+    console.log(`   Total Connections: ${csvStats.total_connections_sent || 0}`);
+    console.log(`   Total Messages: ${csvStats.total_messages_sent || 0}`);
+    console.log(`   Total Posts Created: ${csvStats.total_posts_created || 0}`);
+    
+    console.log('\n📂 CSV File Paths:');
+    if (userCSVPaths?.csv_paths) {
+      Object.entries(userCSVPaths.csv_paths).forEach(([key, value]) => {
+        if (value) console.log(`   📄 ${key}: ${value}`);
+      });
+    }
+    
     console.log('═'.repeat(60) + '\n');
 
     await sleep(15000);
@@ -530,6 +587,7 @@ async function linkedInAutomation() {
   } catch (err) {
     console.error('\n❌ ERROR:');
     console.error(err.message);
+    console.error(err.stack);
   }
 }
 

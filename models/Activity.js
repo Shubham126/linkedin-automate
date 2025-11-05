@@ -1,4 +1,4 @@
-// ==================== FILE: models/Activity.js ====================
+// ==================== FILE: models/Activity.js (UPDATED) ====================
 import mongoose from 'mongoose';
 
 const activitySchema = new mongoose.Schema({
@@ -9,7 +9,17 @@ const activitySchema = new mongoose.Schema({
   },
   action: {
     type: String,
-    enum: ['like', 'comment', 'view'],
+    enum: [
+      'like',
+      'comment',
+      'view',
+      'connection_requested',
+      'connection_accepted',
+      'message_sent',
+      'post_created',
+      'profile_scrape',
+      'search_engagement'
+    ],
     required: true,
     index: true
   },
@@ -28,6 +38,17 @@ const activitySchema = new mongoose.Schema({
   commentScore: Number,
   postType: {
     type: String,
+    enum: [
+      'feed_post',
+      'job_post',
+      'article',
+      'video',
+      'connection_request',
+      'message',
+      'profile_scrape',
+      'search_result',
+      'unknown'
+    ],
     default: 'unknown'
   },
   isJobPost: {
@@ -42,11 +63,17 @@ const activitySchema = new mongoose.Schema({
   status: {
     type: String,
     default: 'logged'
+  },
+  additionalData: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   }
 });
 
 // Compound indexes for faster queries
 activitySchema.index({ linkedinUsername: 1, timestamp: -1 });
 activitySchema.index({ linkedinUsername: 1, action: 1, timestamp: -1 });
+activitySchema.index({ postUrl: 1 });
 
-export const Activity = mongoose.model('Activity', activitySchema);
+// ✅ CHANGED: Use default export instead of named export
+export default mongoose.model('Activity', activitySchema);

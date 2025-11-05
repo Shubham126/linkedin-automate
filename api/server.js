@@ -1,4 +1,4 @@
-// ==================== FILE: backend/api/server.js ====================
+// ==================== FILE: backend/api/server.js (COMPLETE UPDATED) ====================
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -16,7 +16,15 @@ import {
   getTopAuthors,
   getEngagementTrends
 } from '../services/mongoConnectionService.js';
+
+// Import route files
 import automationRoutes from './routes/automation.js';
+import analyticsRoutes from './routes/analytics.js';
+import authRoutes from './routes/auth.js';
+import connectionsRoutes from './routes/connections.js';
+import dataRoutes from './routes/data.js';
+import logsRoutes from './routes/logs.js';
+import csvRoutes from './routes/csv.js'; // NEW
 
 dotenv.config();
 
@@ -436,8 +444,14 @@ app.delete('/api/logs/user/:username', async (req, res) => {
   }
 });
 
-// ==================== AUTOMATION ROUTES ====================
+// ==================== ROUTE IMPORTS ====================
 app.use('/api/automation', automationRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/connections', connectionsRoutes);
+app.use('/api/data', dataRoutes);
+app.use('/api/logs', logsRoutes);
+app.use('/api/csv', csvRoutes); // NEW CSV ROUTES
 
 // ==================== STATIC FILES ====================
 app.use('/exports', express.static('exports'));
@@ -471,29 +485,67 @@ app.listen(PORT, () => {
   console.log(`✅ API Health: http://localhost:${PORT}/api/health`);
   console.log(`📊 MongoDB: ${mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected'}`);
   console.log('═'.repeat(70));
-  console.log('\n📋 Available Endpoints:');
-  console.log('\n📊 Logs API:');
+  console.log('\n📋 Available Endpoints:\n');
+  
+  console.log('🔐 Authentication API:');
+  console.log(`   POST /api/auth/register`);
+  console.log(`   POST /api/auth/login`);
+  console.log(`   POST /api/auth/linkedin/login\n`);
+  
+  console.log('📊 Analytics API:');
+  console.log(`   GET/POST /api/analytics/activity-stats`);
+  console.log(`   GET/POST /api/analytics/connection-stats`);
+  console.log(`   GET/POST /api/analytics/engagement-stats`);
+  console.log(`   GET/POST /api/analytics/recent-activity\n`);
+  
+  console.log('🤝 Connections API:');
+  console.log(`   GET/POST /api/connections/pending`);
+  console.log(`   GET/POST /api/connections/accepted`);
+  console.log(`   GET/POST /api/connections/history\n`);
+  
+  console.log('📁 Data API:');
+  console.log(`   GET/POST /api/data/profiles`);
+  console.log(`   GET/POST /api/data/connections`);
+  console.log(`   GET/POST /api/data/messages`);
+  console.log(`   GET/POST /api/data/stats\n`);
+  
+  console.log('📝 Logs API:');
   console.log(`   GET  /api/logs/user/:username`);
   console.log(`   GET  /api/logs/stats/:username`);
   console.log(`   GET  /api/logs/download/:username`);
-  console.log(`   GET  /api/logs/user/:username/action/:action`);
-  console.log(`   POST /api/logs/delete-old/:username`);
+  console.log(`   GET  /api/logs/dashboard/:username`);
   console.log(`   GET  /api/logs/activity-by-date/:username`);
   console.log(`   GET  /api/logs/top-authors/:username`);
   console.log(`   GET  /api/logs/trends/:username`);
-  console.log('\n🤖 Automation API:');
-  console.log(`   POST /api/automation/feed-engagement/start`);
-  console.log(`   POST /api/automation/connection-requests/start`);
-  console.log(`   POST /api/automation/monitor-connections/start`);
-  console.log(`   POST /api/automation/welcome-messages/start`);
-  console.log(`   POST /api/automation/search-engagement/start`);
-  console.log(`   POST /api/automation/profile-scraping/start`);
-  console.log(`   GET  /api/automation/job/status`);
-  console.log(`   POST /api/automation/job/cancel`);
-  console.log('\n📝 Post Creation API:');
-  console.log(`   POST /api/automation/create-post/generate-ai`);
-  console.log(`   POST /api/automation/create-post/generate-hashtags`);
-  console.log('═'.repeat(70) + '\n');
+  console.log(`   GET  /api/logs/user/:username/action/:action`);
+  console.log(`   POST /api/logs/delete-old/:username`);
+  console.log(`   DELETE /api/logs/user/:username\n`);
+  
+  console.log('📊 CSV Analytics API (NEW):');
+  console.log(`   GET  /api/csv/stats/activity`);
+  console.log(`   GET  /api/csv/stats/csv?email=X`);
+  console.log(`   GET  /api/csv/stats/engagement?email=X`);
+  console.log(`   GET  /api/csv/stats/paths?email=X`);
+  console.log(`   GET  /api/csv/data/csv?email=X&fileType=Y`);
+  console.log(`   GET  /api/csv/data/download?email=X&fileType=Y`);
+  console.log(`   GET  /api/csv/data/analytics?email=X`);
+  console.log(`   GET  /api/csv/data/dashboard?email=X`);
+  console.log(`   GET  /api/csv/data/activity-log?email=X`);
+  console.log(`   POST /api/csv/stats/update?email=X\n`);
+  
+  console.log('🤖 Automation API:');
+  console.log(`   POST /api/automation/start/feed-engagement`);
+  console.log(`   POST /api/automation/start/connection-requests`);
+  console.log(`   POST /api/automation/start/monitor-connections`);
+  console.log(`   POST /api/automation/start/welcome-messages`);
+  console.log(`   POST /api/automation/start/search-engagement`);
+  console.log(`   POST /api/automation/start/profile-scraping`);
+  console.log(`   GET  /api/automation/status`);
+  console.log(`   POST /api/automation/cancel`);
+  console.log(`   POST /api/automation/force-kill\n`);
+  
+  console.log('═'.repeat(70));
+  console.log('✅ All routes loaded successfully!\n');
 });
 
 export default app;

@@ -4,11 +4,11 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import dotenv from 'dotenv';
 import connectDB from './config/database.js';
 import { linkedInLogin } from './actions/login.js';
-import { sendConnectionRequest } from './actions/sendConnectionRequest.js';
 import { sleep, randomDelay } from './utils/helpers.js';
 import { getCookies, saveCookies } from './services/cookieService.js';
-import { getProxyArgs, authenticateProxy } from './utils/proxyHelper.js';
+import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
 import { logActivity } from './utils/activityLogger.js';
+import csvService from './services/csvService.js';
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
@@ -34,7 +34,6 @@ async function initializeMongoDB() {
   }
 }
 
-// Initialize MongoDB first
 await initializeMongoDB();
 
 if (!mongoConnected) {
@@ -42,126 +41,262 @@ if (!mongoConnected) {
   process.exit(1);
 }
 
-/**
- * Human-like click function
- */
-async function humanLikeClick(page, element, options = {}) {
-  const {
-    minDelay = 300,
-    maxDelay = 800,
-    moveSteps = 10,
-    jitter = true
-  } = options;
-
-  try {
-    const boundingBox = await element.boundingBox();
-    if (!boundingBox) {
-      await element.click();
-      return true;
-    }
-
-    let targetX = boundingBox.x + boundingBox.width / 2;
-    let targetY = boundingBox.y + boundingBox.height / 2;
-
-    if (jitter) {
-      targetX += (Math.random() - 0.5) * 10;
-      targetY += (Math.random() - 0.5) * 10;
-    }
-
-    const currentPos = { x: 960, y: 540 };
-    const steps = moveSteps;
-
-    for (let i = 0; i < steps; i++) {
-      const progress = i / steps;
-      const easeProgress = 1 - Math.pow(1 - progress, 3);
-      
-      const x = currentPos.x + (targetX - currentPos.x) * easeProgress;
-      const y = currentPos.y + (targetY - currentPos.y) * easeProgress;
-
-      await page.mouse.move(x, y);
-      await sleep(randomDelay(10, 30));
-    }
-
-    await page.mouse.move(targetX, targetY);
-    await sleep(randomDelay(minDelay, maxDelay));
-    await page.mouse.click(targetX, targetY);
-    await sleep(randomDelay(200, 400));
-
-    return true;
-
-  } catch (error) {
-    try {
-      await element.click();
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-}
+// ==================== FLEXIBLE SELECTORS ====================
 
 /**
- * Extract profile data from search results
+ * Find connect button with multiple selector strategies
  */
-async function extractSearchProfileData(personCard) {
+async function findConnectButton(card) {
   try {
-    const profileData = await personCard.evaluate((card) => {
-      try {
-        let profileUrl = '';
-        const profileLink = card.querySelector('a[href*="/in/"]');
-        if (profileLink) {
-          profileUrl = profileLink.href.split('?')[0];
-        }
+    // Strategy 1: Direct aria-label match
+    let button = await card.$('button[aria-label*="Connect"]');
+    if (button) return button;
 
-        let name = 'Unknown';
-        const nameSpan = card.querySelector('a[href*="/in/"] span[aria-hidden="true"]');
-        if (nameSpan) {
-          name = nameSpan.textContent.trim();
-        }
+    // Strategy 2: Text content match
+    button = await card.$('button');
+    if (button) {
+      const text = await card.evaluate(el => {
+        const btn = el.querySelector('button');
+        return btn ? btn.innerText : '';
+      });
+      if (text.includes('Connect')) return button;
+    }
 
-        let connectionDegree = '';
-        const degreeSpan = card.querySelector('.entity-result__badge-text span[aria-hidden="true"]');
-        if (degreeSpan) {
-          connectionDegree = degreeSpan.textContent.trim();
-        }
-
-        let headline = '';
-        const headlineDiv = card.querySelector('div.OiirvpInMLuzeczYhJxvFuDuiuHxENkKTCg');
-        if (headlineDiv) {
-          headline = headlineDiv.textContent.trim();
-        }
-
-        let location = '';
-        const locationDiv = card.querySelector('div.GsHgiSLvYaZkNpDqOEblEZZtsuotYRBZQtc');
-        if (locationDiv) {
-          location = locationDiv.textContent.trim();
-        }
-
-        return { profileUrl, name, connectionDegree, headline, location };
-      } catch (error) {
-        return null;
+    // Strategy 3: Class-based selection
+    const buttons = await card.$$('button.artdeco-button');
+    for (const btn of buttons) {
+      const label = await btn.evaluate(el => el.getAttribute('aria-label'));
+      if (label && label.includes('Connect')) {
+        return btn;
       }
-    });
+    }
 
-    return profileData;
+    console.log('⚠️ Connect button not found with standard selectors');
+    return null;
   } catch (error) {
-    console.error('⚠️ Error extracting profile data:', error.message);
+    console.error('Error finding connect button:', error.message);
     return null;
   }
 }
 
 /**
- * Get connection type for display
+ * Extract profile info with flexible selectors
  */
-function getConnectionType(connectionDegree) {
-  if (connectionDegree.includes('1st')) return '1st Degree (Connected)';
-  if (connectionDegree.includes('2nd')) return '2nd Degree (Friend of Friend)';
-  if (connectionDegree.includes('3rd')) return '3rd Degree';
-  if (connectionDegree.includes('Open Network')) return 'Open Network';
-  return 'Unknown';
+async function extractProfileInfo(card) {
+  try {
+    const profileInfo = await card.evaluate((el) => {
+      try {
+        // Extract name - multiple strategies
+        let name = 'Unknown';
+        const nameLink = el.querySelector('a[href*="/in/"]');
+        if (nameLink) {
+          const span = nameLink.querySelector('span[aria-hidden="true"]');
+          if (span) name = span.textContent.trim();
+        }
+
+        // Extract profile URL
+        let profileUrl = '';
+        if (nameLink) {
+          profileUrl = nameLink.href.split('?')[0];
+        }
+
+        // Extract connection degree
+        let connectionDegree = '';
+        const badgeText = el.querySelector('.entity-result__badge-text span[aria-hidden="true"]');
+        if (badgeText) {
+          connectionDegree = badgeText.textContent.trim();
+        }
+
+        // Extract headline
+        let headline = '';
+        const headlineDiv = el.querySelector('[class*="t-14"][class*="t-black"][class*="t-normal"]');
+        if (headlineDiv) {
+          headline = headlineDiv.textContent.trim();
+        }
+
+        // Extract location
+        let location = '';
+        const locationDivs = el.querySelectorAll('[class*="t-14"][class*="t-normal"]');
+        if (locationDivs.length > 1) {
+          location = locationDivs[1].textContent.trim();
+        }
+
+        return { name, profileUrl, connectionDegree, headline, location };
+      } catch (error) {
+        return null;
+      }
+    });
+
+    return profileInfo;
+  } catch (error) {
+    console.error('Error extracting profile info:', error.message);
+    return null;
+  }
 }
 
 /**
- * Main automation function
+ * Find profile cards with multiple selector strategies
+ */
+async function findProfileCards(page) {
+  const selectors = [
+    'div[class*="YXDxfnjpPlixHYMnsZdH"]', // Direct class
+    'li.entity-result__item',
+    'li[data-test-reusable-search-result-item]',
+    'div.reusable-search-simple-insight',
+    'div[class*="entity-result"]'
+  ];
+
+  for (const selector of selectors) {
+    try {
+      const cards = await page.$$(selector);
+      if (cards && cards.length > 0) {
+        console.log(`✅ Found ${cards.length} profiles using selector: ${selector}`);
+        return { cards, selector };
+      }
+    } catch (e) {
+      // Continue to next selector
+    }
+  }
+
+  console.log('⚠️ No profiles found with standard selectors');
+  return { cards: [], selector: null };
+}
+
+/**
+ * Handle connection modal
+ */
+async function handleConnectionModal(page) {
+  try {
+    console.log('   🔍 Looking for modal...');
+
+    // Wait for modal to appear
+    await page.waitForSelector('div[role="dialog"]', { timeout: 5000 }).catch(() => {});
+
+    const modal = await page.$('div[role="dialog"]');
+    if (!modal) {
+      console.log('   ⚠️ Modal did not appear');
+      return false;
+    }
+
+    console.log('   ✅ Modal appeared');
+    await sleep(randomDelay(1000, 2000));
+
+    // Find send button with multiple strategies
+    let sendButton = await modal.$('button[aria-label="Send without a note"]');
+    
+    if (!sendButton) {
+      sendButton = await modal.$('button[aria-label="Send now"]');
+    }
+
+    if (!sendButton) {
+      // Find by text content
+      const buttons = await modal.$$('button');
+      for (const btn of buttons) {
+        const text = await btn.evaluate(el => el.innerText);
+        if (text.includes('Send')) {
+          sendButton = btn;
+          break;
+        }
+      }
+    }
+
+    if (!sendButton) {
+      console.log('   ⚠️ Send button not found');
+      return false;
+    }
+
+    console.log('   📤 Found send button');
+    await sleep(randomDelay(600, 1000));
+
+    // Click send button with human-like movement
+    await modal.evaluate(el => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    await sleep(300);
+
+    await sendButton.click();
+    console.log('   ✅ Connection request sent!');
+    await sleep(randomDelay(2000, 3000));
+
+    return true;
+  } catch (error) {
+    console.error('   Error handling modal:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Check for next page button
+ */
+async function hasNextPage(page) {
+  try {
+    const nextButton = await page.$('button[aria-label="Next"]');
+    if (!nextButton) {
+      console.log('📄 No next page button found');
+      return false;
+    }
+
+    const isDisabled = await nextButton.evaluate(el => el.disabled);
+    if (isDisabled) {
+      console.log('📄 Next button is disabled (reached end)');
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.log('⚠️ Error checking next page:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Go to next page with proper waiting
+ */
+async function goToNextPage(page) {
+  try {
+    const nextButton = await page.$('button[aria-label="Next"]');
+    if (!nextButton) return false;
+
+    console.log('📄 Clicking next page button...');
+    await nextButton.click();
+    
+    console.log('⏳ Waiting for next page to load...');
+    await sleep(randomDelay(5000, 8000));
+
+    // Wait for new results to appear
+    const selectors = [
+      'div[class*="YXDxfnjpPlixHYMnsZdH"]',
+      'li.entity-result__item',
+      'li[data-test-reusable-search-result-item]'
+    ];
+
+    let foundSelector = null;
+    for (const selector of selectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 10000 });
+        foundSelector = selector;
+        break;
+      } catch (e) {
+        // Continue to next selector
+      }
+    }
+
+    if (foundSelector) {
+      console.log(`✅ Results loaded on next page`);
+      await sleep(randomDelay(2000, 3000));
+      return true;
+    }
+
+    console.log('⚠️ Results not loaded on next page');
+    return false;
+  } catch (error) {
+    console.error('Error going to next page:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Main connection requests automation
  */
 async function sendConnectionRequestsAutomation() {
   const proxyArgs = getProxyArgs();
@@ -185,19 +320,40 @@ async function sendConnectionRequestsAutomation() {
     page.setDefaultNavigationTimeout(120000);
     
     await authenticateProxy(page);
+    if (proxyArgs.length > 0) {
+      await testProxyConnection(page);
+    }
+
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9'
+    });
+
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'language', {
+        get: function() { return 'en-US'; }
+      });
+      Object.defineProperty(navigator, 'languages', {
+        get: function() { return ['en-US', 'en']; }
+      });
+    });
 
     console.log('\n' + '═'.repeat(70));
     console.log('🎯 LinkedIn Connection Requests Automation');
     console.log('═'.repeat(70));
-    console.log('🤝 Sends to 1st, 2nd, 3rd degree connections');
-    console.log('🖱️  Human-like clicking behavior');
-    console.log('📊 Saves ALL data to MongoDB');
-    console.log('📥 Export as CSV from dashboard');
+    console.log('🤝 Sends connection requests intelligently');
+    console.log('🖱️  Handles modal popups automatically');
+    console.log('📄 Supports pagination across multiple pages');
+    console.log('📊 Saves data to MongoDB + CSV');
     console.log('⚠️  Educational purposes only');
     console.log('═'.repeat(70) + '\n');
 
     const username = process.env.LINKEDIN_USERNAME;
     const password = process.env.LINKEDIN_PASSWORD;
+    const useSavedCookies = process.env.USE_SAVED_COOKIES !== 'false';
 
     if (!username) {
       console.error('❌ LINKEDIN_USERNAME is required');
@@ -209,62 +365,92 @@ async function sendConnectionRequestsAutomation() {
 
     let loggedIn = false;
 
-    // Try saved cookies first
-    console.log('🍪 Checking for saved session...');
-    const savedCookies = await getCookies(username);
-    
-    if (savedCookies && savedCookies.length > 0) {
-      console.log(`✅ Found ${savedCookies.length} saved cookies`);
+    // ==================== TRY SAVED COOKIES ====================
+    if (useSavedCookies && username) {
+      console.log('\n🍪 Checking for saved session...');
+      const savedCookies = await getCookies(username);
       
-      try {
-        await page.setCookie(...savedCookies);
-        await page.goto('https://www.linkedin.com/feed/', { 
-          waitUntil: 'domcontentloaded',
-          timeout: 120000 
-        });
+      if (savedCookies && savedCookies.length > 0) {
+        console.log(`✅ Found ${savedCookies.length} saved cookies`);
+        
+        try {
+          await page.setCookie(...savedCookies);
+          
+          console.log('⏳ Navigating to LinkedIn...');
+          await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
+            waitUntil: 'domcontentloaded',
+            timeout: 120000
+          });
 
-        await sleep(3000);
+          await sleep(5000);
 
-        const currentUrl = page.url();
-        if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
-          console.log('✅ Session restored!\n');
-          loggedIn = true;
+          const currentUrl = page.url();
+          console.log(`📍 Current URL: ${currentUrl}`);
+
+          if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
+            console.log('✅ Session restored successfully!');
+            loggedIn = true;
+          } else {
+            console.log('⚠️ Cookies expired, need fresh login');
+            loggedIn = false;
+          }
+        } catch (error) {
+          console.log(`⚠️ Error restoring session: ${error.message}`);
+          loggedIn = false;
         }
-      } catch (error) {
-        console.log('⚠️ Cookies invalid, need fresh login');
       }
     }
 
-    // Login if needed
+    // ==================== LOGIN IF NEEDED ====================
     if (!loggedIn) {
       if (!password) {
-        console.error('❌ LINKEDIN_PASSWORD required for login');
+        console.error('❌ Password required for fresh login');
         await browser.close();
         return;
       }
 
-      console.log('🔐 Logging in with credentials...');
+      console.log('\n🔐 Starting fresh login...');
       loggedIn = await linkedInLogin(page, username, password, true);
       
+      console.log('\n⏸️  Please complete all verification steps:');
+      console.log('   1️⃣  Solve CAPTCHA (if shown)');
+      console.log('   2️⃣  Enter OTP code (if requested)');
+      console.log('   3️⃣  Wait for redirect to LinkedIn feed');
+      console.log('\n⏳ Waiting up to 5 minutes...\n');
+      
+      try {
+        await page.waitForFunction(
+          () => window.location.href.includes('/feed') || 
+                window.location.href.includes('/mynetwork'),
+          { timeout: 300000 }
+        );
+        
+        loggedIn = true;
+        console.log('✅ Login verified successfully!');
+        
+      } catch (error) {
+        console.log('⚠️  Timeout waiting for login completion');
+        const currentUrl = page.url();
+        if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
+          loggedIn = true;
+          console.log('✅ But you are logged in!');
+        } else {
+          loggedIn = false;
+        }
+      }
+      
       if (!loggedIn) {
-        console.log('❌ Login failed');
+        console.log('❌ Login failed. Exiting...');
         await browser.close();
         return;
       }
 
-      console.log('✅ Login successful!');
       const cookies = await page.cookies();
       await saveCookies(username, cookies);
-      console.log(`💾 Saved ${cookies.length} cookies\n`);
+      console.log(`✅ Saved ${cookies.length} cookies`);
     }
 
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9'
-    });
-
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
+    console.log('✅ Logged in successfully!\n');
 
     const searchKeyword = process.env.SEARCH_KEYWORD || 'developer';
     const maxActions = parseInt(process.env.MAX_CONNECTION_REQUESTS_PER_DAY) || 20;
@@ -285,25 +471,7 @@ async function sendConnectionRequestsAutomation() {
     }
     
     console.log('⏳ Waiting for search results...');
-    
-    try {
-      await page.waitForSelector('li.KgcwjRyzPQRukDbnrBkCrvzjRiiRZrlNo', {
-        timeout: 30000,
-        visible: true
-      });
-      console.log('✅ Search results appeared!');
-    } catch (e) {
-      console.log('⚠️ Results not found, trying alternative selector...');
-    }
-
-    console.log('⏳ Waiting for lazy loading...');
-    await sleep(randomDelay(5000, 8000));
-
-    console.log('🔄 Scrolling to trigger lazy loading...');
-    await page.evaluate(() => {
-      window.scrollBy({ top: 500, behavior: 'smooth' });
-    });
-    await sleep(randomDelay(2000, 3000));
+    await sleep(randomDelay(8000, 12000));
 
     console.log('✅ Search results ready!\n');
     console.log('═'.repeat(70));
@@ -315,175 +483,131 @@ async function sendConnectionRequestsAutomation() {
     let request3rd = 0;
     let skipped = 0;
     let processedProfiles = 0;
+    let currentPage = 1;
 
-    // Process profiles
+    // ==================== MAIN PROCESSING LOOP ====================
     while (actionsTaken < maxActions) {
-      console.log(`\n📋 Scanning for profiles... (Sent: ${actionsTaken}/${maxActions})`);
+      console.log(`\n📄 Page ${currentPage} | Processing profiles... (Sent: ${requestsSent}/${maxActions})`);
 
-      await page.evaluate(() => {
-        window.scrollBy({ top: 800, behavior: 'smooth' });
-      });
-      await sleep(randomDelay(2000, 4000));
-
-      let personCards = await page.$$('li.KgcwjRyzPQRukDbnrBkCrvzjRiiRZrlNo');
+      // Find profile cards
+      const { cards, selector } = await findProfileCards(page);
       
-      console.log(`📊 Found ${personCards.length} profile cards`);
-
-      if (personCards.length === 0) {
-        console.log('❌ No profiles found');
+      if (cards.length === 0) {
+        console.log('⚠️ No profiles found on this page');
         
-        await page.evaluate(() => window.scrollBy(0, 600));
-        await sleep(3000);
-        
-        personCards = await page.$$('li.KgcwjRyzPQRukDbnrBkCrvzjRiiRZrlNo');
-        
-        if (personCards.length === 0) {
-          console.log('❌ End of search results.');
-          break;
+        const hasNext = await hasNextPage(page);
+        if (hasNext) {
+          const moved = await goToNextPage(page);
+          if (moved) {
+            currentPage++;
+            continue;
+          }
         }
+        break;
       }
 
-      for (let i = 0; i < personCards.length && actionsTaken < maxActions; i++) {
+      console.log(`📊 Found ${cards.length} profiles on page ${currentPage}\n`);
+
+      // Process each card
+      for (let i = 0; i < cards.length && actionsTaken < maxActions; i++) {
         processedProfiles++;
-        console.log(`\n👤 Profile ${processedProfiles}`);
-        console.log('─'.repeat(70));
-
+        
         try {
-          personCards = await page.$$('li.KgcwjRyzPQRukDbnrBkCrvzjRiiRZrlNo');
-          
-          if (i >= personCards.length) {
-            console.log('⚠️ Card index out of range');
+          // Re-fetch cards as DOM may have changed
+          const { cards: updatedCards } = await findProfileCards(page);
+          if (i >= updatedCards.length) {
+            console.log('⚠️ Card index out of range, moving to next');
             continue;
           }
 
-          const card = personCards[i];
+          const card = updatedCards[i];
 
-          let profileData = await extractSearchProfileData(card);
+          console.log(`\n👤 Profile ${processedProfiles}`);
+          console.log('─'.repeat(70));
 
-          if (!profileData || !profileData.profileUrl) {
-            console.log('⚠️ Could not extract profile data');
+          // Extract profile info
+          const profileInfo = await extractProfileInfo(card);
+          if (!profileInfo || !profileInfo.profileUrl) {
+            console.log('   ⚠️ Could not extract profile data');
+            skipped++;
             continue;
           }
 
-          console.log(`   Name: ${profileData.name}`);
-          console.log(`   Headline: ${profileData.headline.substring(0, 50)}...`);
-          console.log(`   Connection: ${getConnectionType(profileData.connectionDegree)}`);
+          console.log(`   Name: ${profileInfo.name}`);
+          console.log(`   Headline: ${profileInfo.headline.substring(0, 50)}...`);
+          console.log(`   Connection: ${profileInfo.connectionDegree}`);
 
+          // Scroll into view
           await card.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
           await sleep(randomDelay(1000, 1500));
 
-          // Look for action button
-          console.log('   🔍 Looking for action button...');
-          
-          let actionButton = await card.$('button[aria-label*="Invite"][aria-label*="to connect"]');
-          let actionType = 'invite';
-
-          if (!actionButton) {
-            actionButton = await card.$('button[aria-label*="Connect"]');
-            if (actionButton) {
-              actionType = 'connect';
-            }
+          // Find and click connect button
+          const connectButton = await findConnectButton(card);
+          if (!connectButton) {
+            console.log('   ⚠️ Connect button not found');
+            skipped++;
+            continue;
           }
 
-          if (actionButton) {
-            console.log(`   ✅ Found ${actionType} button on card`);
-            await sleep(randomDelay(500, 800));
+          console.log('   🔍 Found connect button');
+          await sleep(randomDelay(500, 800));
 
-            const clicked = await humanLikeClick(page, actionButton, {
-              minDelay: 400,
-              maxDelay: 900,
-              moveSteps: 12,
-              jitter: true
-            });
+          // Click connect button
+          await connectButton.click();
+          console.log('   👆 Button clicked');
+          await sleep(randomDelay(2000, 4000));
 
-            if (!clicked) {
-              console.log('   ⚠️ Button click failed');
-              skipped++;
-              continue;
-            }
+          // Handle modal
+          const sent = await handleConnectionModal(page);
 
-            console.log('   👆 Button clicked');
-            await sleep(randomDelay(2000, 4000));
+          if (sent) {
+            requestsSent++;
+            actionsTaken++;
 
-            // Handle modal
-            let modalFound = false;
-            for (let j = 0; j < 5; j++) {
-              const modal = await page.$('div[role="dialog"]');
-              if (modal) {
-                modalFound = true;
-                console.log('   ✅ Modal appeared');
-                break;
-              }
-              await sleep(800);
-            }
-
-            if (modalFound) {
-              await sleep(randomDelay(1000, 2000));
-
-              let sendButton = await page.$('button[aria-label="Send without a note"]');
-              
-              if (!sendButton) {
-                sendButton = await page.$('button[aria-label="Send now"]');
-              }
-
-              if (sendButton) {
-                console.log('   📤 Found Send button');
-                await sleep(randomDelay(600, 1000));
-
-                const sendClicked = await humanLikeClick(page, sendButton, {
-                  minDelay: 400,
-                  maxDelay: 900,
-                  moveSteps: 12,
-                  jitter: true
-                });
-
-                if (sendClicked) {
-                  console.log('   ✅ Connection request sent!');
-                  requestsSent++;
-                  actionsTaken++;
-
-                  if (profileData.connectionDegree.includes('1st')) {
-                    request1st++;
-                  } else if (profileData.connectionDegree.includes('2nd')) {
-                    request2nd++;
-                  } else {
-                    request3rd++;
-                  }
-
-                  // ✅ LOG TO MONGODB
-                  try {
-                    await logActivity({
-                      action: 'connection_requested',
-                      postUrl: profileData.profileUrl,
-                      authorName: profileData.name,
-                      postPreview: profileData.headline,
-                      commentText: profileData.location,
-                      postType: 'connection_request',
-                      isJobPost: false
-                    });
-                  } catch (err) {
-                    console.log('   ⚠️ MongoDB save failed');
-                  }
-
-                  console.log(`   Total sent: ${requestsSent}/${maxActions}`);
-                  await sleep(randomDelay(2000, 3000));
-                } else {
-                  console.log('   ⚠️ Send button click failed');
-                  skipped++;
-                }
-              } else {
-                console.log('   ⚠️ Send button not found');
-                skipped++;
-              }
+            // Track connection degree
+            if (profileInfo.connectionDegree.includes('1st')) {
+              request1st++;
+            } else if (profileInfo.connectionDegree.includes('2nd')) {
+              request2nd++;
             } else {
-              console.log('   ⚠️ Modal did not appear');
-              skipped++;
+              request3rd++;
             }
+
+            // Log to MongoDB
+            try {
+              await logActivity({
+                action: 'connection_requested',
+                postUrl: profileInfo.profileUrl,
+                authorName: profileInfo.name,
+                postPreview: profileInfo.headline,
+                commentText: profileInfo.location,
+                postType: 'connection_request',
+                isJobPost: false
+              });
+            } catch (err) {
+              console.log('   ⚠️ MongoDB save failed');
+            }
+
+            // Log to CSV
+            try {
+              await csvService.appendConnectionSent(username, {
+                timestamp: new Date().toISOString(),
+                recipientName: profileInfo.name,
+                recipientProfileUrl: profileInfo.profileUrl,
+                message: `Connection request via ${searchKeyword} search`,
+                status: 'sent'
+              });
+            } catch (err) {
+              console.log('   ⚠️ CSV save failed');
+            }
+
+            console.log('   ✅ Logged (MongoDB + CSV)');
+            console.log(`   Total sent: ${requestsSent}/${maxActions}`);
           } else {
-            console.log('   ⚠️ No action button on card');
             skipped++;
           }
 
+          // Pause before next
           const pauseTime = randomDelay(3000, 6000);
           console.log(`   ⏳ Pausing ${Math.round(pauseTime/1000)}s...`);
           await sleep(pauseTime);
@@ -497,56 +621,56 @@ async function sendConnectionRequestsAutomation() {
 
       // Check for next page
       if (actionsTaken < maxActions) {
-        console.log('\n📄 Checking for more results...');
-        
-        const nextButton = await page.$('button[aria-label="Next"]');
-        if (nextButton) {
-          const isDisabled = await nextButton.evaluate(el => el.disabled);
-          if (!isDisabled) {
-            console.log('📄 Loading next page...');
-            
-            await humanLikeClick(page, nextButton, {
-              minDelay: 400,
-              maxDelay: 800
-            });
-
-            await sleep(randomDelay(5000, 8000));
-            
-            try {
-              await page.waitForSelector('li.KgcwjRyzPQRukDbnrBkCrvzjRiiRZrlNo', {
-                timeout: 20000,
-                visible: true
-              });
-            } catch (e) {
-              console.log('⚠️ Timeout waiting for next page');
-            }
-            
-            await sleep(randomDelay(3000, 5000));
+        const hasNext = await hasNextPage(page);
+        if (hasNext) {
+          const moved = await goToNextPage(page);
+          if (moved) {
+            currentPage++;
+            console.log(`\n✅ Successfully moved to page ${currentPage}`);
           } else {
-            console.log('📄 No more pages');
+            console.log('\n⚠️ Could not load next page');
             break;
           }
         } else {
-          console.log('📄 Next button not found');
+          console.log('\n📄 No more pages available');
           break;
         }
       }
     }
 
-    // Summary
+    // ==================== FINAL STATS ====================
+    const csvStats = await csvService.getUserStats(username);
+    const userCSVPaths = await csvService.getUserCSVPaths(username);
+
     console.log('\n' + '═'.repeat(70));
     console.log('✅ AUTOMATION COMPLETED!');
     console.log('═'.repeat(70));
-    console.log(`\n📊 Results:`);
+    console.log(`\n📊 Session Results:`);
     console.log(`   ✅ Total Requests Sent: ${requestsSent}/${maxActions}`);
     console.log(`   🤝 1st Degree: ${request1st}`);
     console.log(`   🤝 2nd Degree: ${request2nd}`);
-    console.log(`   🤝 3rd Degree: ${request3rd}`);
+    console.log(`   🤝 3rd+ Degree: ${request3rd}`);
     console.log(`   ⏭️  Skipped: ${skipped}`);
-    console.log(`   👥 Profiles: ${processedProfiles}`);
-    console.log('\n📊 MongoDB Data Saved!');
-    console.log(`📥 API: GET http://localhost:3000/api/logs/user/${username}`);
-    console.log(`📥 CSV: GET http://localhost:3000/api/logs/download/${username}`);
+    console.log(`   👥 Profiles Processed: ${processedProfiles}`);
+    console.log(`   📄 Pages: ${currentPage}`);
+    
+    console.log('\n📁 All-Time Statistics:');
+    console.log(`      📄 CSV Files:`);
+    console.log(`         • Total Connections: ${csvStats.total_connections_sent || 0}`);
+    console.log(`         • Total Likes: ${csvStats.total_engagement_likes || 0}`);
+    console.log(`         • Total Comments: ${csvStats.total_engagement_comments || 0}`);
+    
+    console.log('\n📂 CSV File Locations:');
+    if (userCSVPaths?.csv_paths) {
+      Object.entries(userCSVPaths.csv_paths).forEach(([key, value]) => {
+        if (value) console.log(`      • ${key}: ${value}`);
+      });
+    }
+    
+    console.log('\n💻 Frontend Dashboard:');
+    console.log(`      • URL: http://localhost:5173`);
+    console.log(`      • Analytics: View all CSV data`);
+    console.log(`      • API: http://localhost:3000/api`);
     console.log('═'.repeat(70) + '\n');
 
     await sleep(10000);
@@ -554,7 +678,12 @@ async function sendConnectionRequestsAutomation() {
 
   } catch (error) {
     console.error('\n❌ Critical Error:', error.message);
-    await browser.close();
+    console.error(error.stack);
+    try {
+      await browser.close();
+    } catch (e) {
+      console.error('Error closing browser:', e.message);
+    }
   }
 }
 

@@ -1,13 +1,13 @@
+// ==================== FILE: backend/utils/simpleJobManager.js (UPDATED) ====================
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
+dotenv.config();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Store current job
-let currentJob = null;
 
 class JobManager {
   constructor() {
@@ -16,11 +16,37 @@ class JobManager {
     this.jobData = null;
     this.startTime = null;
     this.output = '';
+    this.killTimeout = null; // Track kill timeout
+    this.isKilling = false; // Track if we're in process of killing
   }
 
-  // Check if a job is running
+  // Check if a job is running (improved)
   isJobRunning() {
-    return this.currentProcess !== null;
+    if (!this.currentProcess) return false;
+    
+    try {
+      // Sending signal 0 checks if process exists without killing it
+      process.kill(this.currentProcess.pid, 0);
+      return true;
+    } catch (err) {
+      // Process doesn't exist
+      this.cleanup();
+      return false;
+    }
+  }
+
+  // Cleanup helper
+  cleanup() {
+    if (this.killTimeout) {
+      clearTimeout(this.killTimeout);
+      this.killTimeout = null;
+    }
+    this.currentJobId = null;
+    this.currentProcess = null;
+    this.jobData = null;
+    this.startTime = null;
+    this.output = '';
+    this.isKilling = false;
   }
 
   // Start a new job
@@ -34,122 +60,234 @@ class JobManager {
     const scriptPath = path.join(__dirname, '../', scriptName);
 
     return new Promise((resolve, reject) => {
-      console.log(`🚀 Starting job: ${jobId}`);
-      console.log(`📄 Script: ${scriptPath}`);
+      try {
+        console.log(`🚀 Starting job: ${jobId}`);
+        console.log(`📄 Script: ${scriptPath}`);
 
-      const jobEnv = {
-        ...process.env,
-        ...params,
-        USE_PROXY: process.env.USE_PROXY || 'false',
-        PROXY_SERVER: process.env.PROXY_SERVER || ''
-      };
+        const jobEnv = {
+          ...process.env,
+          ...params,
+          USE_PROXY: process.env.USE_PROXY || 'false',
+          PROXY_SERVER: process.env.PROXY_SERVER || ''
+        };
 
-      const child = spawn('node', [scriptPath], {
-        env: jobEnv,
-        cwd: path.join(__dirname, '../')
-      });
+        const child = spawn('node', [scriptPath], {
+          env: jobEnv,
+          cwd: path.join(__dirname, '../'),
+          stdio: ['ignore', 'pipe', 'pipe'] // Ignore stdin
+        });
 
-      // Store job details
-      this.currentJobId = jobId;
-      this.currentProcess = child;
-      this.jobData = { scriptName, params };
-      this.startTime = Date.now();
-      this.output = '';
+        // Store job details
+        this.currentJobId = jobId;
+        this.currentProcess = child;
+        this.jobData = { scriptName, params };
+        this.startTime = Date.now();
+        this.output = '';
+        this.isKilling = false;
 
-      child.stdout.on('data', (data) => {
-        const chunk = data.toString();
-        this.output += chunk;
-        console.log(`[${jobId}] ${chunk}`);
-      });
+        console.log(`✅ Job spawned with PID: ${child.pid}`);
 
-      child.stderr.on('data', (data) => {
-        const chunk = data.toString();
-        console.error(`[${jobId}] ERROR: ${chunk}`);
-      });
+        // Handle stdout
+        child.stdout.on('data', (data) => {
+          const chunk = data.toString();
+          this.output += chunk;
+          console.log(`[${jobId}] ${chunk}`);
+        });
 
-      child.on('close', (code) => {
-        console.log(`Job ${jobId} finished with code: ${code}`);
-        
-        // Clear current job
-        this.currentJobId = null;
-        this.currentProcess = null;
-        this.jobData = null;
-        this.startTime = null;
-      });
+        // Handle stderr
+        child.stderr.on('data', (data) => {
+          const chunk = data.toString();
+          console.error(`[${jobId}] ERROR: ${chunk}`);
+        });
 
-      child.on('error', (error) => {
-        console.error(`Job ${jobId} error:`, error);
-        this.currentJobId = null;
-        this.currentProcess = null;
-        this.jobData = null;
-        this.startTime = null;
-      });
+        // Handle process close
+        child.on('close', (code) => {
+          console.log(`✅ Job ${jobId} finished with code: ${code}`);
+          this.cleanup();
+        });
 
-      // Return job info immediately
-      resolve({
-        jobId,
-        status: 'started',
-        message: `Job started: ${scriptName}`
-      });
+        // Handle process error
+        child.on('error', (error) => {
+          console.error(`❌ Job ${jobId} error:`, error.message);
+          this.cleanup();
+        });
+
+        // Handle process exit
+        child.on('exit', (code, signal) => {
+          console.log(`Process exited: ${jobId} | Code: ${code} | Signal: ${signal}`);
+          this.cleanup();
+        });
+
+        // Return job info immediately
+        resolve({
+          jobId,
+          status: 'started',
+          message: `Job started: ${scriptName}`,
+          pid: child.pid
+        });
+
+      } catch (error) {
+        console.error(`❌ Error spawning job: ${error.message}`);
+        this.cleanup();
+        reject(error);
+      }
     });
   }
 
-  // Cancel current job
+  // Cancel current job (improved)
   cancelJob() {
     if (!this.isJobRunning()) {
-      throw new Error('No job is currently running');
+      return {
+        success: false,
+        message: 'No job is currently running',
+        isRunning: false
+      };
+    }
+
+    if (this.isKilling) {
+      return {
+        success: false,
+        message: 'Job cancellation already in progress',
+        isRunning: true
+      };
     }
 
     const jobId = this.currentJobId;
-    console.log(`🛑 Cancelling job: ${jobId}`);
+    const pid = this.currentProcess.pid;
+
+    console.log(`🛑 Cancelling job: ${jobId} (PID: ${pid})`);
+    this.isKilling = true;
 
     try {
-      // Kill the process
-      this.currentProcess.kill('SIGTERM');
+      // Step 1: Send SIGTERM (graceful shutdown)
+      console.log(`📌 Sending SIGTERM to process ${pid}...`);
+      process.kill(pid, 'SIGTERM');
 
-      // Give it a moment, then force kill if needed
-      setTimeout(() => {
-        if (this.currentProcess) {
-          this.currentProcess.kill('SIGKILL');
+      // Step 2: Wait 3 seconds, then SIGKILL if still running
+      this.killTimeout = setTimeout(() => {
+        console.log(`⏱️ SIGTERM timeout, sending SIGKILL to ${pid}...`);
+        try {
+          if (this.currentProcess && this.isJobRunning()) {
+            process.kill(pid, 'SIGKILL');
+            console.log(`💥 SIGKILL sent to ${pid}`);
+          }
+        } catch (err) {
+          console.error(`Error sending SIGKILL: ${err.message}`);
         }
-      }, 5000);
+      }, 3000);
 
-      // Clear job details
+      // Step 3: Listen for exit event to clear timeout
+      const exitHandler = () => {
+        if (this.killTimeout) {
+          clearTimeout(this.killTimeout);
+          this.killTimeout = null;
+        }
+      };
+
+      this.currentProcess.once('exit', exitHandler);
+      this.currentProcess.once('close', exitHandler);
+
       const cancelledJobId = this.currentJobId;
-      this.currentJobId = null;
-      this.currentProcess = null;
-      this.jobData = null;
-      this.startTime = null;
-      this.output = '';
+      const cancelledPid = pid;
+
+      // Don't cleanup immediately, let the process handle it
+      // Just mark as killing
+      console.log(`✅ Cancellation initiated for ${cancelledJobId}`);
 
       return {
         success: true,
-        message: `Job ${cancelledJobId} cancelled successfully`
+        message: `Job cancellation initiated: ${cancelledJobId}`,
+        pid: cancelledPid,
+        cancelledJob: cancelledJobId
       };
+
     } catch (error) {
-      console.error('Error cancelling job:', error);
-      throw new Error('Failed to cancel job');
+      console.error(`❌ Error cancelling job: ${error.message}`);
+      this.isKilling = false;
+      return {
+        success: false,
+        message: `Error cancelling job: ${error.message}`,
+        isRunning: true
+      };
     }
   }
 
-  // Get current job status
+  // Force kill (emergency)
+  forceKillJob() {
+    if (!this.currentProcess || !this.isJobRunning()) {
+      return {
+        success: false,
+        message: 'No process to kill'
+      };
+    }
+
+    const pid = this.currentProcess.pid;
+    console.log(`💥 Force killing process ${pid}...`);
+
+    try {
+      // Send SIGKILL immediately
+      process.kill(pid, 'SIGKILL');
+      console.log(`✅ SIGKILL sent to ${pid}`);
+
+      // Clear timeout if exists
+      if (this.killTimeout) {
+        clearTimeout(this.killTimeout);
+        this.killTimeout = null;
+      }
+
+      this.cleanup();
+
+      return {
+        success: true,
+        message: 'Process force killed',
+        pid
+      };
+    } catch (error) {
+      console.error(`❌ Error force killing: ${error.message}`);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
+  }
+
+  // Get current job status (improved)
   getStatus() {
     if (!this.isJobRunning()) {
       return {
         isRunning: false,
-        message: 'No job is currently running'
+        message: 'No job is currently running',
+        script: null,
+        pid: null,
+        status: 'idle'
       };
     }
+
+    const uptime = Math.round((Date.now() - this.startTime) / 1000);
 
     return {
       isRunning: true,
       jobId: this.currentJobId,
-      scriptName: this.jobData.scriptName,
-      params: this.jobData.params,
-      startTime: this.startTime,
-      runningFor: Date.now() - this.startTime,
+      script: this.jobData?.scriptName || 'unknown',
+      pid: this.currentProcess?.pid || null,
+      uptime: uptime,
+      startTime: new Date(this.startTime).toISOString(),
+      status: this.isKilling ? 'killing' : 'running',
+      message: this.isKilling 
+        ? `Killing job (${uptime}s elapsed)` 
+        : `Job running (${uptime}s elapsed)`,
       outputLength: this.output.length
     };
+  }
+
+  // Get job output
+  getOutput() {
+    return this.output;
+  }
+
+  // Clear output
+  clearOutput() {
+    this.output = '';
   }
 }
 

@@ -1,5 +1,5 @@
 
-import { Activity } from '../models/Activity.js';
+import Activity from '../models/Activity.js';
 
 /**
  * Log activity to MongoDB

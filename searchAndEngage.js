@@ -12,6 +12,7 @@ import { sleep, randomDelay, extractPostUrl, extractAuthorName } from './utils/h
 import { logActivity, getActivityStats, hasInteractedWithPost } from './utils/activityLogger.js';
 import { getCookies, saveCookies } from './services/cookieService.js';
 import { getProxyArgs, authenticateProxy, testProxyConnection } from './utils/proxyHelper.js';
+import csvService from './services/csvService.js';
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
@@ -76,12 +77,10 @@ async function searchLinkedIn(page, keyword) {
 async function scrollSearchResults(page) {
   console.log('🐭 Scrolling through search results...');
   
-  // Move mouse to random position
   const randomX = randomDelay(400, 900);
   const randomY = randomDelay(300, 700);
   await page.mouse.move(randomX, randomY);
   
-  // Scroll with mouse wheel
   const scrollDistance = randomDelay(600, 1200);
   const increment = 100;
   const steps = Math.abs(scrollDistance / increment);
@@ -91,8 +90,25 @@ async function scrollSearchResults(page) {
     await sleep(randomDelay(30, 80));
   }
   
-  // Wait after scroll
   await sleep(randomDelay(2000, 3500));
+}
+
+/**
+ * Check if post is a job post
+ */
+async function isJobPost(post) {
+  try {
+    return await post.evaluate(el => {
+      const text = el.innerText.toLowerCase();
+      return text.includes('job') || 
+             text.includes('hiring') || 
+             text.includes('position') ||
+             text.includes('application') ||
+             text.includes('apply');
+    });
+  } catch (error) {
+    return false;
+  }
 }
 
 /**
@@ -132,13 +148,23 @@ async function searchAndEngageAutomation() {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'language', {
+        get: function() { return 'en-US'; }
+      });
+      Object.defineProperty(navigator, 'languages', {
+        get: function() { return ['en-US', 'en']; }
+      });
+    });
+
     console.log('\n' + '═'.repeat(70));
     console.log('🎯 LinkedIn Search & Engage Automation');
     console.log('═'.repeat(70));
     console.log('🔍 Searches for specific keywords and engages intelligently');
     console.log('🤖 AI evaluates each post before engaging');
-    console.log('📊 Saves ALL data to MongoDB');
-    console.log('📥 Export as CSV from dashboard');
+    console.log('📊 Saves ALL data to MongoDB + CSV');
+    console.log('📁 Creates CSV files for export');
+    console.log('📥 Download CSV from dashboard');
     console.log('⚠️  Educational purposes only');
     console.log('═'.repeat(70) + '\n');
 
@@ -156,9 +182,9 @@ async function searchAndEngageAutomation() {
 
     let loggedIn = false;
 
-    // Try to use saved cookies first
-    if (useSavedCookies) {
-      console.log('🍪 Checking for saved session...');
+    // ==================== TRY SAVED COOKIES ====================
+    if (useSavedCookies && username) {
+      console.log('\n🍪 Checking for saved session...');
       const savedCookies = await getCookies(username);
       
       if (savedCookies && savedCookies.length > 0) {
@@ -166,32 +192,70 @@ async function searchAndEngageAutomation() {
         
         try {
           await page.setCookie(...savedCookies);
-          await page.goto('https://www.linkedin.com/feed/', { 
-            waitUntil: 'networkidle2',
-            timeout: 30000 
+          
+          console.log('⏳ Navigating to LinkedIn...');
+          await page.goto('https://www.linkedin.com/feed/?locale=en_US', { 
+            waitUntil: 'domcontentloaded',
+            timeout: 120000
           });
 
+          await sleep(5000);
+
           const currentUrl = page.url();
+          console.log(`📍 Current URL: ${currentUrl}`);
+
           if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
             console.log('✅ Session restored successfully!');
             loggedIn = true;
+          } else {
+            console.log('⚠️ Cookies expired, need fresh login');
+            loggedIn = false;
           }
         } catch (error) {
-          console.log('⚠️ Error restoring session, will login fresh');
+          console.log(`⚠️ Error restoring session: ${error.message}`);
+          loggedIn = false;
         }
       }
     }
 
-    // Login if cookies didn't work
+    // ==================== LOGIN IF NEEDED ====================
     if (!loggedIn) {
       if (!password) {
-        console.error('❌ LINKEDIN_PASSWORD is required for fresh login');
+        console.error('❌ Password required for fresh login');
         await browser.close();
         return;
       }
 
-      console.log('🔐 Logging in to LinkedIn...');
+      console.log('\n🔐 Starting fresh login...');
       loggedIn = await linkedInLogin(page, username, password, true);
+      
+      console.log('\n⏸️  Please complete all verification steps:');
+      console.log('   1️⃣  Solve CAPTCHA (if shown)');
+      console.log('   2️⃣  Enter OTP code (if requested)');
+      console.log('   3️⃣  Wait for redirect to LinkedIn feed');
+      console.log('\n⏳ Waiting up to 5 minutes...\n');
+      
+      // Wait for successful navigation to feed (up to 5 minutes)
+      try {
+        await page.waitForFunction(
+          () => window.location.href.includes('/feed') || 
+                window.location.href.includes('/mynetwork'),
+          { timeout: 300000 } // 5 minutes
+        );
+        
+        loggedIn = true;
+        console.log('✅ Login verified successfully!');
+        
+      } catch (error) {
+        console.log('⚠️  Timeout waiting for login completion');
+        const currentUrl = page.url();
+        if (currentUrl.includes('/feed') || currentUrl.includes('/mynetwork')) {
+          loggedIn = true;
+          console.log('✅ But you are logged in!');
+        } else {
+          loggedIn = false;
+        }
+      }
       
       if (!loggedIn) {
         console.log('❌ Login failed. Exiting...');
@@ -201,7 +265,7 @@ async function searchAndEngageAutomation() {
 
       const cookies = await page.cookies();
       await saveCookies(username, cookies);
-      console.log(`✅ Saved ${cookies.length} cookies for future use`);
+      console.log(`✅ Saved ${cookies.length} cookies`);
     }
 
     console.log('✅ Logged in successfully!\n');
@@ -231,6 +295,7 @@ async function searchAndEngageAutomation() {
     console.log(`🤖 Starting Search Results Analysis`);
     console.log(`🔍 Keyword: "${searchKeyword}"`);
     console.log(`📊 Target: ${maxPosts} posts`);
+    console.log(`📁 CSV Logging: Enabled`);
     console.log('═'.repeat(70) + '\n');
 
     while (postsEvaluated < maxPosts) {
@@ -271,8 +336,10 @@ async function searchAndEngageAutomation() {
         // Extract info
         const postUrl = await extractPostUrl(post);
         const authorName = await extractAuthorName(post);
+        const isJob = await isJobPost(post);
         
         console.log(`👤 Author: ${authorName}`);
+        if (isJob) console.log('💼 Job Post Detected');
 
         // Check if already interacted
         const alreadyInteracted = await hasInteractedWithPost(postUrl);
@@ -326,7 +393,7 @@ async function searchAndEngageAutomation() {
         console.log(`\n📚 Simulating reading time: ${Math.round(readingTime/1000)}s...`);
         await sleep(readingTime);
 
-        // LIKE ACTION
+        // ==================== LIKE ACTION WITH CSV ====================
         if (evaluation.shouldLike) {
           console.log('\n👍 Liking this post...');
           await sleep(randomDelay(800, 1500));
@@ -335,7 +402,7 @@ async function searchAndEngageAutomation() {
           if (liked) {
             likesGiven++;
             
-            // ✅ LOG TO MONGODB
+            // MongoDB
             await logActivity({
               action: 'like',
               postUrl: postUrl,
@@ -346,7 +413,17 @@ async function searchAndEngageAutomation() {
               isJobPost: evaluation.isJobPost
             });
             
-            console.log('   ✅ Liked and logged to MongoDB');
+            // CSV
+            await csvService.appendLikeActivity(username, {
+              timestamp: new Date().toISOString(),
+              authorName: authorName,
+              postPreview: postContent.text.substring(0, 100),
+              likeScore: evaluation.likeScore,
+              isJobPost: isJob,
+              postUrl: postUrl
+            });
+            
+            console.log('   ✅ Liked and logged (MongoDB + CSV)');
           }
           
           await sleep(randomDelay(1500, 3000));
@@ -354,7 +431,7 @@ async function searchAndEngageAutomation() {
           console.log(`\n⏭️ Not liking (score ${evaluation.likeScore}/10 < 6)`);
         }
 
-        // COMMENT ACTION
+        // ==================== COMMENT ACTION WITH CSV ====================
         if (evaluation.shouldComment) {
           console.log(`\n💬 Commenting on this post...`);
           await sleep(randomDelay(1500, 2500));
@@ -372,7 +449,7 @@ async function searchAndEngageAutomation() {
           if (commented) {
             commentsPosted++;
             
-            // ✅ LOG TO MONGODB
+            // MongoDB
             await logActivity({
               action: 'comment',
               postUrl: postUrl,
@@ -384,7 +461,18 @@ async function searchAndEngageAutomation() {
               postPreview: postContent.text.substring(0, 100)
             });
             
-            console.log('   ✅ Commented and logged to MongoDB');
+            // CSV
+            await csvService.appendCommentActivity(username, {
+              timestamp: new Date().toISOString(),
+              authorName: authorName,
+              postPreview: postContent.text.substring(0, 100),
+              commentText: commentText,
+              commentScore: evaluation.commentScore,
+              isJobPost: isJob,
+              postUrl: postUrl
+            });
+            
+            console.log('   ✅ Commented and logged (MongoDB + CSV)');
           }
         } else {
           console.log(`\n⏭️ Not commenting (score ${evaluation.commentScore}/10 < 9)`);
@@ -409,14 +497,17 @@ async function searchAndEngageAutomation() {
       }
     }
 
-    // ==================== FINAL STATS ====================
+    // ==================== FINAL STATS WITH CSV ====================
     const avgLikeScore = scoreDistribution.likes.length > 0 
       ? (scoreDistribution.likes.reduce((a, b) => a + b, 0) / scoreDistribution.likes.length).toFixed(1)
       : 0;
     const avgCommentScore = scoreDistribution.comments.length > 0
       ? (scoreDistribution.comments.reduce((a, b) => a + b, 0) / scoreDistribution.comments.length).toFixed(1)
       : 0;
-    const activityStats = await getActivityStats();
+    
+    // Get stats
+    const csvStats = await csvService.getUserStats(username);
+    const userCSVPaths = await csvService.getUserCSVPaths(username);
 
     console.log('\n' + '═'.repeat(70));
     console.log('✅ SEARCH & ENGAGE AUTOMATION COMPLETED!');
@@ -433,18 +524,24 @@ async function searchAndEngageAutomation() {
     console.log(`\n   🎯 Engagement:`);
     console.log(`      • Likes Given: ${likesGiven}/${postsEvaluated} (${postsEvaluated > 0 ? Math.round((likesGiven/postsEvaluated)*100) : 0}%)`);
     console.log(`      • Comments Posted: ${commentsPosted}/${postsEvaluated} (${postsEvaluated > 0 ? Math.round((commentsPosted/postsEvaluated)*100) : 0}%)`);
-    console.log('\n📁 All-Time Statistics (from MongoDB):');
-    console.log(`      • Total Activities: ${activityStats.total}`);
-    console.log(`      • Total Likes: ${activityStats.likes}`);
-    console.log(`      • Total Comments: ${activityStats.comments}`);
-    console.log(`      • Unique Posts: ${activityStats.uniquePostCount}`);
-    console.log('\n📊 Data Storage:');
-    console.log(`      • MongoDB: ✅ Connected (localhost:27017)`);
-    console.log(`      • Database: linkedin-automation`);
-    console.log(`      • Collection: activities`);
+    console.log('\n📁 All-Time Statistics:');
+    console.log(`      📄 CSV Files:`);
+    console.log(`         • Total Likes: ${csvStats.total_engagement_likes || 0}`);
+    console.log(`         • Total Comments: ${csvStats.total_engagement_comments || 0}`);
+    console.log(`         • Total Connections: ${csvStats.total_connections_sent || 0}`);
+    console.log(`         • Total Messages: ${csvStats.total_messages_sent || 0}`);
+    
+    console.log('\n📂 CSV File Locations:');
+    if (userCSVPaths?.csv_paths) {
+      Object.entries(userCSVPaths.csv_paths).forEach(([key, value]) => {
+        if (value) console.log(`      • ${key}: ${value}`);
+      });
+    }
+    
     console.log('\n💻 Frontend Dashboard:');
     console.log(`      • URL: http://localhost:5173`);
-    console.log(`      • CSV Download: Data Dashboard → Download button`);
+    console.log(`      • Analytics: View all CSV data`);
+    console.log(`      • Download: Export any CSV file`);
     console.log(`      • API: http://localhost:3000/api`);
     console.log('═'.repeat(70) + '\n');
 
