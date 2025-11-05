@@ -19,8 +19,5 @@ http://localhost:3000
 | npm run scrape-people | Extract profile information | 10-25 min |
 | npm run monitor-connections | Check if requests were accepted | 5-10 min |
 | npm run send-welcome | Send messages to new connections | 5-15 min |
-| npm run create-post | Create and publish a post | 2-5 min |
-| npm run check-replies | Check replies on your posts | 5 min |
-| npm run stats | View automation statistics | 1 min |
 
 ---
